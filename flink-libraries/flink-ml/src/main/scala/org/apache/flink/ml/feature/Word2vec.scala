@@ -23,7 +23,7 @@ import org.apache.flink.ml.math.DenseVector
 import org.apache.flink.ml.pipeline.Predictor
 
 import scala.collection.immutable.HashMap
-import scala.collection.mutable.PriorityQueue
+
 /**
   * Implements Word2Vec; a word-embedding algoritm first described
   * by Tomáš Mikolov et al in http://arxiv.org/pdf/1301.3781.pdf
@@ -35,8 +35,7 @@ case class Word(
   var value: String,
   var count: Int,
   var vector: DenseVector,
-  var code: Vector[Int],
-  var path: Vector[String]
+  var code: Vector[Int]
 )
 
 case class Vocabulary(
@@ -47,7 +46,7 @@ case class Vocabulary(
 )
 
 object HuffmanBinaryTree {
-
+  import scala.collection.mutable.PriorityQueue
   abstract class Tree[+A]
 
   type WeightedNode = (Tree[Any], Int)
@@ -79,32 +78,36 @@ object HuffmanBinaryTree {
     merge(new PriorityQueue[WeightedNode] ++= xs).toList
   }
 
+  //takes a code and decomposes into visited node identities
+  def path(code: Vector[Int]) : Vector[String] = {
+    def form(code: Vector[Int], path: Vector[String]): Vector[String] = code match {
+      case _ +: IndexedSeq() => path.reverse
+      case head +: tail => path match {
+        case _ +: IndexedSeq() => form(tail, head.toString +: path)
+        case _ => form(tail, (path.head + head) +: path)
+      }
+    }
+    form(code, Vector("root"))
+  }
+
   // recursively search the branches of the tree for the required character
   def contains(tree: Tree[Any], value: Any): Boolean = tree match {
     case Leaf(c) => if (c == value) true else false
     case Branch(l, r) => contains(l, value) || contains(r, value)
   }
 
-  //takes a code and decomposes into visited node identities
-  def path(code: Vector[Int]) : Vector[String] = {
-    def form(code: Vector[Int], path: Vector[String]): Vector[String] = code match {
-      case head +: tail => form(tail, path :+ (path.head + code))
-      case IndexedSeq() => path
-    }
-    form(code, Vector("root"))
-  }
-  // recursively build the path string required to traverse the tree to the required character
-  def encode(tree: Tree[Any], value: Any): (Vector[Int], Vector[String]) = {
+  // recursively build the huffman encoding of a token value
+  def encode(tree: Tree[Any], value: Any): Vector[Int] = {
     def turn(tree: Tree[Any], value: Any,
-             code: Vector[Int], path: Vector[String]): (Vector[Int], Vector[String]) = tree match {
-      case Leaf(_) => (code, path)
+             code: Vector[Int]): Vector[Int] = tree match {
+      case Leaf(_) => code
       case Branch(l, r) =>
         if (contains(l, value))
-          turn(l, value, code :+ 0, path :+ code.mkString)
+          turn(l, value, code :+ 0)
         else
-          turn(r, value, code :+ 1, path :+ code.mkString)
+          turn(r, value, code :+ 1)
     }
-    turn(tree, value, Vector.empty[Int], Vector("root"))
+    turn(tree, value, Vector.empty[Int])
   }
 
   def tree(weightedLexicon: Iterable[(Any, Int)]): Tree[Any] =
@@ -121,10 +124,11 @@ object Word2Vec {
   val wordCount = 5
   val vectorLength = 100
 
-  def buildVocab(dataSet: DataSet[Iterable[String]]):Vocabulary = {
+  def buildVocab(dataSet: DataSet[Iterable[String]]): Vocabulary = {
 
     val env = dataSet.getExecutionEnvironment
 
+    //decomposes the input corpus into a localized wordcount
     val weightedLexicon = dataSet
       .flatMap(x => x)
       .map(w => (w, 1))
@@ -134,37 +138,45 @@ object Word2Vec {
 
     val lexiCount = weightedLexicon.size
 
+    //forms a huffman tree from the wordcount -
+    // other weighting might yield interesting results
     val softmaxTree = HuffmanBinaryTree.tree(weightedLexicon)
 
-    val lexiHash = weightedLexicon
-      .zipWithIndex
-      .map(w => HashMap(w._1._1 -> w._2))
-      .reduce(_ ++ _)
-
     val lexicon = weightedLexicon
-      .map(w => (w._1, w._2, HuffmanBinaryTree.encode(softmaxTree, w._1)))
       .map(w => Word(
         w._1,
         w._2,
         DenseVector.apply(
           Array.fill[Double](vectorLength)((math.random - 0.5f) / vectorLength)),
-        w._3._1,
-        w._3._2))
-      .to[Vector]
+        HuffmanBinaryTree.encode(softmaxTree, w._1)))
 
+    //gives a mapping of word value to index in lexicon
+    val lexiHash = lexicon
+      .zipWithIndex
+      .map(w => HashMap(w._1.value -> w._2))
+      .reduce(_ ++ _)
+
+    //gives a mapping of binary tree inner node to
+    //an imaginary 'index' of these values - these will
+    //map to the weighted vectors between the hidden and output
+    //layers of our network - note that each index will be trained
+    //proportionate to the number of words at the subtree served by that branch
+    //and their frequency
     val pathHash = lexicon
-      .map(w => w.path)
+      .map(w => HuffmanBinaryTree.path(w.code))
+      .flatMap(p => p)
       .distinct
       .zipWithIndex
       .map(p => HashMap(p._1 -> p._2))
       .reduce(_ ++ _)
 
-
     Vocabulary(
-      lexicon,
+      lexicon.to[Vector],
       lexiCount,
       lexiHash,
       pathHash)
   }
+
+  def train
 
 }
