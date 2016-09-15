@@ -16,7 +16,7 @@
  * limitations under the License.
  */
 
-package org.apache.flink.ml.feature
+package org.apache.flink.ml.nlp
 
 import breeze.linalg.{DenseMatrix => BreezeMatrix}
 import org.apache.flink.api.common.functions.{RichMapFunction, RichMapPartitionFunction}
