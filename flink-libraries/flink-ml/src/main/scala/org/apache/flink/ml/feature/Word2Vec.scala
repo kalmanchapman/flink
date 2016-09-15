@@ -18,9 +18,10 @@
 
 package org.apache.flink.ml.feature
 
-import org.apache.flink.api.scala.DataSet
-import org.apache.flink.ml.math.DenseVector
-import org.apache.flink.ml.pipeline.Predictor
+import breeze.linalg.{DenseMatrix => BreezeMatrix}
+import org.apache.flink.api.common.functions.{RichMapFunction, RichMapPartitionFunction}
+import org.apache.flink.api.scala._
+import org.apache.flink.ml.optimization.IterativeSolver
 
 import scala.collection.immutable.HashMap
 
@@ -31,10 +32,10 @@ import scala.collection.immutable.HashMap
   * blah blah blah, let's come back to this
   */
 
-case class Word(
+case class Word (
   var value: String,
   var count: Int,
-  var vector: DenseVector,
+  var vector: BreezeMatrix[Double],
   var code: Vector[Int]
 )
 
@@ -42,27 +43,27 @@ case class Vocabulary(
   var lexicon: Vector[Word],
   var lexiCount: Int,
   var lexiHash: Map[String, Int],
-  var pathHash: Map[String, Int]
+  var softmaxHash: Map[String, Int]
 )
 
 object HuffmanBinaryTree {
   import scala.collection.mutable.PriorityQueue
-  abstract class Tree[+A]
+  private abstract class Tree[+A]
 
-  type WeightedNode = (Tree[Any], Int)
+  private type WeightedNode = (Tree[Any], Int)
 
   implicit def orderByInverseWeight[A <: WeightedNode]: Ordering[A] =
     Ordering.by {
       case (_, weight) => -1 * weight
     }
 
-  case class Leaf[A](value: A) extends Tree[A]
+  private case class Leaf[A](value: A) extends Tree[A]
 
-  case class Branch[A](left: Tree[A], right: Tree[A]) extends Tree[A]
+  private case class Branch[A](left: Tree[A], right: Tree[A]) extends Tree[A]
 
   // recursively build the binary tree needed to Huffman encode the text
   // not immutable :(
-  def merge(xs: PriorityQueue[WeightedNode]): PriorityQueue[WeightedNode] = {
+  private def merge(xs: PriorityQueue[WeightedNode]): PriorityQueue[WeightedNode] = {
     if (xs.length == 1) xs
     else {
       val l = xs.dequeue
@@ -73,25 +74,13 @@ object HuffmanBinaryTree {
   }
 
   //convenience for building and extracting from priority queue
-  def merge(xs: Iterable[WeightedNode]): Iterable[WeightedNode] = {
+  private def merge(xs: Iterable[WeightedNode]): Iterable[WeightedNode] = {
     //form priority queue, build tree, return a list (should have only 1 member)
     merge(new PriorityQueue[WeightedNode] ++= xs).toList
   }
 
-  //takes a code and decomposes into visited node identities
-  def path(code: Vector[Int]) : Vector[String] = {
-    def form(code: Vector[Int], path: Vector[String]): Vector[String] = code match {
-      case _ +: IndexedSeq() => path.reverse
-      case head +: tail => path match {
-        case _ +: IndexedSeq() => form(tail, head.toString +: path)
-        case _ => form(tail, (path.head + head) +: path)
-      }
-    }
-    form(code, Vector("root"))
-  }
-
   // recursively search the branches of the tree for the required character
-  def contains(tree: Tree[Any], value: Any): Boolean = tree match {
+  private def contains(tree: Tree[Any], value: Any): Boolean = tree match {
     case Leaf(c) => if (c == value) true else false
     case Branch(l, r) => contains(l, value) || contains(r, value)
   }
@@ -110,21 +99,67 @@ object HuffmanBinaryTree {
     turn(tree, value, Vector.empty[Int])
   }
 
+  //takes a code and decomposes into visited node identities
+  def path(code: Vector[Int]) : Vector[String] = {
+    def form(code: Vector[Int], path: Vector[String]): Vector[String] = code match {
+      case _ +: IndexedSeq() => path.reverse
+      case head +: tail => path match {
+        case _ +: IndexedSeq() => form(tail, head.toString +: path)
+        case _ => form(tail, (path.head + head) +: path)
+      }
+    }
+    form(code, Vector("root"))
+  }
+
   def tree(weightedLexicon: Iterable[(Any, Int)]): Tree[Any] =
     merge(weightedLexicon.map(x => (Leaf(x._1), x._2))).head._1
 }
 
-class Word2Vec extends Predictor[Word2Vec] {
+class Word2Vec {
 
 }
 
 object Word2Vec {
 
+  //should be constant
+  val BC_WORD_VECS = "broadcast_word_vectors"
+  val BC_SOFTMAX_VECS = "broadcast_softmax_vectors"
+  val BC_LEXI_HASH = "broadcast_lexi_hash"
+  val BC_SOFTMAX_HASH = "broadcast_softmax_hash"
+  val BC_LEXICON = "broadcast_lexicon"
+
   //should be settable
+  val learningRate = 0.025
   val wordCount = 5
   val vectorLength = 100
+  val maxSentenceLength = 1000
 
-  def buildVocab(dataSet: DataSet[Iterable[String]]): Vocabulary = {
+  def train(dataSet: DataSet[Iterable[String]]): Vocabulary = {
+
+    val env = dataSet.getExecutionEnvironment
+
+    val vocabulary = buildVocab(dataSet)
+
+    val wordVecsGlobal = vocabulary.lexicon
+      .map(w => w.vector)
+      .reduce(BreezeMatrix.vertcat(_, _))
+
+    val softmaxVecsGlobal = BreezeMatrix().apply(vectorLength, vocabulary.lexiCount)
+
+    val alpha = learningRate
+
+    //convert sentences into references to vocabulary.lexicon
+    val sentences =
+
+    //iterator?
+
+    val modifiedWeights =
+
+
+
+  }
+
+  private def buildVocab(dataSet: DataSet[Iterable[String]]): Vocabulary = {
 
     val env = dataSet.getExecutionEnvironment
 
@@ -146,8 +181,8 @@ object Word2Vec {
       .map(w => Word(
         w._1,
         w._2,
-        DenseVector.apply(
-          Array.fill[Double](vectorLength)((math.random - 0.5f) / vectorLength)),
+        BreezeMatrix.create(1, vectorLength,
+          Array.fill(vectorLength)((math.random - 0.5f) / vectorLength)),
         HuffmanBinaryTree.encode(softmaxTree, w._1)))
 
     //gives a mapping of word value to index in lexicon
@@ -177,6 +212,8 @@ object Word2Vec {
       pathHash)
   }
 
-  def train
-
+  class sentenceToVocabularyMapper
+    extends RichMapPartitionFunction[Iterable[String], Vector[Int]] {
+      var
+  }
 }
