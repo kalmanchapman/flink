@@ -18,10 +18,11 @@
 
 package org.apache.flink.ml.nlp
 
-import breeze.linalg.{DenseMatrix => BreezeMatrix}
-import org.apache.flink.api.common.functions.{RichMapFunction, RichMapPartitionFunction}
 import org.apache.flink.api.scala._
-import org.apache.flink.ml.optimization.IterativeSolver
+import org.apache.flink.ml.RichDataSet
+import org.apache.flink.ml.math.{BLAS, DenseVector}
+import org.apache.flink.ml.optimization.Solver
+import org.apache.flink.util.Collector
 
 import scala.collection.immutable.HashMap
 
@@ -29,24 +30,10 @@ import scala.collection.immutable.HashMap
   * Implements Word2Vec; a word-embedding algoritm first described
   * by Tomáš Mikolov et al in http://arxiv.org/pdf/1301.3781.pdf
   *
-  * blah blah blah, let's come back to this
+  *
   */
 
-case class Word (
-  var value: String,
-  var count: Int,
-  var vector: BreezeMatrix[Double],
-  var code: Vector[Int]
-)
-
-case class Vocabulary(
-  var lexicon: Vector[Word],
-  var lexiCount: Int,
-  var lexiHash: Map[String, Int],
-  var softmaxHash: Map[String, Int]
-)
-
-object HuffmanBinaryTree {
+object HuffmanBinaryTree extends Serializable {
   import scala.collection.mutable.PriorityQueue
   private abstract class Tree[+A]
 
@@ -115,105 +102,144 @@ object HuffmanBinaryTree {
     merge(weightedLexicon.map(x => (Leaf(x._1), x._2))).head._1
 }
 
-class Word2Vec {
+/**
+  * Hierarchical SoftMax is an approach to the softmax classification solver
+  * that utilizes a distributed, sequential representation of class output probabilities
+  * via a huffman encoding of known classes and a training process that 'learns'
+  * the output classes by traversing the inner probabilities of the encoding
+  *
+  * More on hierarchical softmax: (http://www-personal.umich.edu/~ronxin/pdf/w2vexp.pdf)
+  * More on softmax: (https://en.wikipedia.org/wiki/Softmax_function)
+  */
 
-}
+case class Context[T](target: T, context: Iterable[T])
 
-object Word2Vec {
+trait WeightMatrix
 
-  //should be constant
-  val BC_WORD_VECS = "broadcast_word_vectors"
-  val BC_SOFTMAX_VECS = "broadcast_softmax_vectors"
-  val BC_LEXI_HASH = "broadcast_lexi_hash"
-  val BC_SOFTMAX_HASH = "broadcast_softmax_hash"
-  val BC_LEXICON = "broadcast_lexicon"
+case class HSMTargetValue(vector: DenseVector, code: Vector[Int], path: Vector[String])
 
-  //should be settable
-  val learningRate = 0.025
-  val wordCount = 5
-  val vectorLength = 100
-  val maxSentenceLength = 1000
+case class HSMWeightMatrix[T](leafVectors: Map[T, HSMTargetValue],
+                              innerVectors: Map[String, DenseVector]) extends WeightMatrix
 
-  def train(dataSet: DataSet[Iterable[String]]): Vocabulary = {
+trait TrainingSet
 
-    val env = dataSet.getExecutionEnvironment
+case class HSMTrainingSet[T](leafKeys: Iterable[T],
+                             innerKeys: Iterable[String]) extends TrainingSet
 
-    val vocabulary = buildVocab(dataSet)
+class ContextClassifier extends Solver[Context, HSMWeightMatrix] {
 
-    val wordVecsGlobal = vocabulary.lexicon
-      .map(w => w.vector)
-      .reduce(BreezeMatrix.vertcat(_, _))
+  val numberOfIterations: Int = 1
+  val minTargetCount: Int = 5
+  val vectorSize: Int = 100
+  val learningRate: Double = 0.015
 
-    val softmaxVecsGlobal = BreezeMatrix().apply(vectorLength, vocabulary.lexiCount)
+  def optimize[T](data: DataSet[Context[T]],
+                  initialWeights: Option[DataSet[HSMWeightMatrix[T]]]): DataSet[HSMWeightMatrix[T]] = {
 
-    val alpha = learningRate
+    val initialWeightsDS: DataSet[HSMWeightMatrix[T]] = createInitialWeightsDS(initialWeights, data)
 
-    //convert sentences into references to vocabulary.lexicon
-    val sentences =
-
-    //iterator?
-
-    val modifiedWeights =
-
-
+    // iterateDelta is POS imho
+//    val learnedWeightsDS: DataSet[HSMWeightMatrix[T]] = initialWeightsDS
+//      .iterateDelta(data, numberOfIterations, Array(0)) {
+//        (weightSet, dataSet) => {
+//          dataSet.
+//        }
+//      }
 
   }
 
-  private def buildVocab(dataSet: DataSet[Iterable[String]]): Vocabulary = {
+  def createInitialWeightsDS[T](initialWeights: Option[DataSet[HSMWeightMatrix[T]]],
+                                data: DataSet[Context[T]]
+                               ): DataSet[HSMWeightMatrix[T]] = initialWeights match {
+    //check on weight set? - expansion on weight set?
+    case Some(weightMatrix) => weightMatrix
+    case None => formHSMWeightMatrix(data)
+  }
 
-    val env = dataSet.getExecutionEnvironment
+  private def formHSMWeightMatrix[T](data: DataSet[Context[T]]): DataSet[HSMWeightMatrix[T]] = {
+    val env = data.getExecutionEnvironment
 
-    //decomposes the input corpus into a localized wordcount
-    val weightedLexicon = dataSet
-      .flatMap(x => x)
-      .map(w => (w, 1))
-      .groupBy(0).sum(1)
-      .filter(_._2 >= wordCount)
-      .collect()
+    val targets = data
+      .map(x => (x.target, 1)).groupBy(0).sum(1)
+      .filter(_._2 >= minTargetCount)
 
-    val lexiCount = weightedLexicon.size
+    val softMaxTree = env.fromElements(HuffmanBinaryTree.tree(targets.collect()))
 
-    //forms a huffman tree from the wordcount -
-    // other weighting might yield interesting results
-    val softmaxTree = HuffmanBinaryTree.tree(weightedLexicon)
+    val leafMap = targets
+      .mapWithBcVariable(softMaxTree) {
+        (target, softMaxTree) => {
+          val code = HuffmanBinaryTree.encode(softMaxTree, target._1)
+          val path = HuffmanBinaryTree.path(code)
+          target._1 -> HSMTargetValue(
+            DenseVector.apply(
+              Array.fill(vectorSize)((math.random - 0.5f) / vectorSize)),
+            code,
+            path
+          )
+        }
+      }
 
-    val lexicon = weightedLexicon
-      .map(w => Word(
-        w._1,
-        w._2,
-        BreezeMatrix.create(1, vectorLength,
-          Array.fill(vectorLength)((math.random - 0.5f) / vectorLength)),
-        HuffmanBinaryTree.encode(softmaxTree, w._1)))
-
-    //gives a mapping of word value to index in lexicon
-    val lexiHash = lexicon
-      .zipWithIndex
-      .map(w => HashMap(w._1.value -> w._2))
-      .reduce(_ ++ _)
-
-    //gives a mapping of binary tree inner node to
-    //an imaginary 'index' of these values - these will
-    //map to the weighted vectors between the hidden and output
-    //layers of our network - note that each index will be trained
-    //proportionate to the number of words at the subtree served by that branch
-    //and their frequency
-    val pathHash = lexicon
-      .map(w => HuffmanBinaryTree.path(w.code))
-      .flatMap(p => p)
+    val innerMap = leafMap
+      .map(l => l._2.path).flatMap(x => x)
       .distinct
-      .zipWithIndex
-      .map(p => HashMap(p._1 -> p._2))
-      .reduce(_ ++ _)
+      .map(x => x -> DenseVector.zeros(vectorSize))
 
-    Vocabulary(
-      lexicon.to[Vector],
-      lexiCount,
-      lexiHash,
-      pathHash)
+    env.fromElements(0 -> HSMWeightMatrix(leafMap.collect.toMap, innerMap.collect.toMap))
   }
 
-  class sentenceToVocabularyMapper
-    extends RichMapPartitionFunction[Iterable[String], Vector[Int]] {
-      var
+  //I would *LOVE* to use a mapPartitionWithBcVariable - but it hasn't been implemented!
+  //why is that? well - the abstract Java method returns Void - and scala extensions can't
+  //fulfill the requirements of such a method with icky trickery...
+  private def SkipGram[T](
+                           data: DataSet[Context[T]],
+                           weights: DataSet[HSMWeightMatrix[T]],
+                           learningRate: Double)
+  : DataSet[HSMWeightMatrix[T]] = {
+    data
+      .mapWithBcVariable(weights)(mapContext)
+      .flatMap(x => x)
+      .mapPartition((t, collector: Collector[HSMWeightMatrix]) => {
+        val localWeights = weights.collect().head
+      })
+  }
+
+  private def mapContext[T](data: Context[T],
+                            weights: HSMWeightMatrix[T]): Option[HSMTrainingSet[T]] = weights.leafVectors.get(data.target) match {
+    case Some(targetValue) =>
+      Option(
+        HSMTrainingSet(
+          data.context
+            .flatMap(c => weights.leafVectors.get(c) match {
+              case Some(contextValue) => Option(c)
+              case _ => None
+            }),
+          targetValue.path
+            .flatMap(t => weights.innerVectors.get(t) match {
+              case Some(innerValue) => Option(t)
+              case _ => None
+            })))
+    case _ => None
+  }
+
+  //should comment the heck out of this, as the magic occurs here
+  //we get a 'subset' of leaf vectors, and inner vectors, and we need to loop over each
+  //inner vector for each leaf vector - performing calculations and error updates at each step.
+  private def trainOnContext[T](contextTrainingSet: Iterable[HSMTrainingSet[T]],
+                                localWeights:HSMWeightMatrix[T],
+                                learningRate: Double): HSMWeightMatrix[T] = {
+    contextTrainingSet.head.
+  }
+
+  private def trainOnWindow[T](inputVectors: List[(String, DenseVector)],
+                               outputVectors: List[(String, DenseVector)],
+                               leafVec: DenseVector,
+                               errorVec: DenseVector,
+                               learningRate: Double)
+  : (List[(String, DenseVector)], DenseVector, DenseVector) = inputVectors match {
+    case head::tail => {
+      
+      (tail, outputVectors, leafVec, errorVec, learningRate)
+    }
+    case Nil => (outputVectors, leafVec, errorVec)
   }
 }
