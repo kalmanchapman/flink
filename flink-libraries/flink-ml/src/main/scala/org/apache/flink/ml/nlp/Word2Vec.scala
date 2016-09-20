@@ -19,13 +19,12 @@
 package org.apache.flink.ml.nlp
 
 import breeze.{numerics => BreezeNumerics}
+
 import org.apache.flink.api.scala._
-import org.apache.flink.ml.RichDataSet
+import org.apache.flink.ml._
 import org.apache.flink.ml.math.{BLAS, DenseVector}
 import org.apache.flink.ml.optimization.Solver
 import org.apache.flink.util.Collector
-
-import scala.collection.immutable.HashMap
 
 /**
   * Implements Word2Vec; a word-embedding algoritm first described
@@ -175,7 +174,7 @@ class ContextClassifier[T] extends Solver[Context[T], HSMWeightMatrix[T]] {
           val path = HuffmanBinaryTree.path(code)
           target._1 -> HSMTargetValue(
             DenseVector.apply(
-              Array.fill(vectorSize)((math.random - 0.5f) / vectorSize)),
+              Array.fill(vectorSize)((scala.math.random - 0.5f) / vectorSize)),
             code,
             path
           )
