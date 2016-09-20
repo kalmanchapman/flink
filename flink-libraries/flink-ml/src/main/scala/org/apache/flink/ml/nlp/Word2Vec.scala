@@ -19,7 +19,6 @@
 package org.apache.flink.ml.nlp
 
 import breeze.{numerics => BreezeNumerics}
-import org.apache.flink.api.common.functions.RichMapPartitionFunction
 import org.apache.flink.api.scala._
 import org.apache.flink.ml.RichDataSet
 import org.apache.flink.ml.math.{BLAS, DenseVector}
@@ -123,38 +122,44 @@ case class HSMTargetValue(vector: DenseVector, code: Vector[Int], path: Vector[S
 case class HSMStepValue(key: String, target: Int, vector: DenseVector)
 
 case class HSMWeightMatrix[T](leafVectors: Map[T, HSMTargetValue],
-                              innerVectors: Map[String, DenseVector]) extends WeightMatrix
+                              innerVectors: Map[String, DenseVector]) extends WeightMatrix {
+  def ++ (that: HSMWeightMatrix[T]): HSMWeightMatrix[T] = {
+    HSMWeightMatrix(this.leafVectors ++ that.leafVectors, this.innerVectors ++ that.innerVectors)
+  }
+}
 
 trait TrainingSet
 
-case class HSMTrainingSet[T](leafKeys: Iterable[T],
-                             innerKeys: Iterable[(String, Int)]) extends TrainingSet
+case class HSMTrainingSet[T](leafVectors: List[(T, HSMTargetValue)],
+                             innerVectors: List[HSMStepValue],
+                             weightMatrix: HSMWeightMatrix[T]) extends TrainingSet
 
-class ContextClassifier extends Solver[Context, HSMWeightMatrix] {
+class ContextClassifier[T] extends Solver[Context[T], HSMWeightMatrix[T]] {
 
   val numberOfIterations: Int = 1
   val minTargetCount: Int = 5
   val vectorSize: Int = 100
   val learningRate: Double = 0.015
 
-  def optimize[T](data: DataSet[Context[T]],
-                  initialWeights: Option[DataSet[HSMWeightMatrix[T]]]): DataSet[HSMWeightMatrix[T]] = {
+  def optimize(data: DataSet[Context[T]],
+               initialWeights: Option[DataSet[HSMWeightMatrix[T]]]): DataSet[HSMWeightMatrix[T]] = {
 
     val initialWeightsDS: DataSet[HSMWeightMatrix[T]] = createInitialWeightsDS(initialWeights, data)
 
-
-
+    initialWeightsDS.iterate(numberOfIterations) {
+      weights => SkipGram(data, weights, learningRate)
+    }
   }
 
-  def createInitialWeightsDS[T](initialWeights: Option[DataSet[HSMWeightMatrix[T]]],
-                                data: DataSet[Context[T]]
-                               ): DataSet[HSMWeightMatrix[T]] = initialWeights match {
+  def createInitialWeightsDS(initialWeights: Option[DataSet[HSMWeightMatrix[T]]],
+                              data: DataSet[Context[T]])
+  : DataSet[HSMWeightMatrix[T]] = initialWeights match {
     //check on weight set? - expansion on weight set?
     case Some(weightMatrix) => weightMatrix
     case None => formHSMWeightMatrix(data)
   }
 
-  private def formHSMWeightMatrix[T](data: DataSet[Context[T]]): DataSet[HSMWeightMatrix[T]] = {
+  private def formHSMWeightMatrix(data: DataSet[Context[T]]): DataSet[HSMWeightMatrix[T]] = {
     val env = data.getExecutionEnvironment
 
     val targets = data
@@ -185,33 +190,71 @@ class ContextClassifier extends Solver[Context, HSMWeightMatrix] {
     env.fromElements(HSMWeightMatrix(leafMap.collect.toMap, innerMap.collect.toMap))
   }
 
-  //I would *LOVE* to use a mapPartitionWithBcVariable - but it hasn't been implemented!
-  //why is that? well - the abstract Java method returns Void - and scala extensions can't
-  //fulfill the requirements of such a method with icky trickery...
-  private def SkipGram[T](
-                           data: DataSet[Context[T]],
-                           weights: DataSet[HSMWeightMatrix[T]],
-                           learningRate: Double)
+  private def SkipGram(data: DataSet[Context[T]],
+                       weights: DataSet[HSMWeightMatrix[T]],
+                       learningRate: Double)
   : DataSet[HSMWeightMatrix[T]] = {
-    data
+    val learnedWeights = data
       .mapWithBcVariable(weights)(mapContext)
       .flatMap(x => x)
-      .mapPartition((t, collector: Collector[HSMWeightMatrix[T]]) => {
-        trainOnPartition(t.toList, weights.collect().head, learningRate)
+      .mapPartition((trainingSet, collector: Collector[HSMWeightMatrix[T]]) => {
+        trainOnPartition(trainingSet.toList,
+          HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map.empty[String, DenseVector]),learningRate)
       })
-      .reduce((a,b) => b)
+
+    val innerVectors = learnedWeights
+      .flatMap(x => x.innerVectors.toSeq)
+      .groupBy(_._1)
+      .reduceGroup(learnedVecs => {
+        learnedVecs.reduce((a,b) => {
+          val aVec = a._2
+          val bVec = b._2
+          BLAS.axpy(1, aVec, bVec)
+          (a._1, bVec)
+        })
+      })
+      .map(x => Map(x))
+      .reduce(_ ++ _)
+      .map(x => HSMWeightMatrix[T](Map.empty, x))
+
+    val leafWeights = learnedWeights
+      .flatMap(x => x.leafVectors.toSeq)
+      .groupBy(_._1)
+      .reduceGroup(learnedVecs => {
+        learnedVecs.reduce((a,b) => {
+          val aVec = a._2.vector
+          val bVec = b._2.vector
+          BLAS.axpy(1, aVec, bVec)
+          (a._1, b._2.copy(vector = bVec))
+        })
+      })
+      .map(x => Map(x))
+      .reduce(_ ++ _)
+      .map(x => HSMWeightMatrix[T](x, Map.empty))
+
+    weights.union(leafWeights).union(innerVectors)
+      .reduce((a,b) => a ++ b)
   }
 
-  //simplify this - it's not really a map, it's a filter - but on both the super
-  //and sub objects
-  private def mapContext[T](data: Context[T],
-                            weights: HSMWeightMatrix[T]): Option[HSMTrainingSet[T]] = weights.leafVectors.get(data.target) match {
+  private def mapContext(data: Context[T],
+                         weights: HSMWeightMatrix[T])
+  : Option[HSMTrainingSet[T]] = weights.leafVectors.get(data.target) match {
     case Some(targetValue) =>
+      val leaf = data.context
+      val inner = targetValue.path
       Option(
         HSMTrainingSet(
-          data.context.filter(c => weights.leafVectors.contains(c)),
-          targetValue.path.zip(targetValue.code)
-            .filter(c => weights.innerVectors.contains(c._1))))
+          leaf.flatMap(k => weights.leafVectors.get(k) match {
+            case Some(leafVector) => Option(k -> leafVector)
+            case _ => None
+          }).toList,
+          inner.zip(targetValue.code)
+              .flatMap(k => weights.innerVectors.get(k._1) match {
+                case Some(innerVector) => Option(HSMStepValue(k._1, k._2, innerVector))
+                case _ => None
+              }).toList,
+          HSMWeightMatrix(weights.leafVectors.filterKeys(leaf.toSet),
+            weights.innerVectors.filterKeys(inner.toSet))))
     case _ => None
   }
 
@@ -221,43 +264,32 @@ class ContextClassifier extends Solver[Context, HSMWeightMatrix] {
 
 
   //loops on (target, contextSet) pairs
-  private def trainOnPartition[T](contextTrainingSet: List[HSMTrainingSet[T]],
-                                  localWeights:HSMWeightMatrix[T],
-                                  learningRate: Double)
+  private def trainOnPartition(contextTrainingSet: List[HSMTrainingSet[T]],
+                               partialWeights: HSMWeightMatrix[T],
+                               learningRate: Double)
   : HSMWeightMatrix[T] = contextTrainingSet match {
-    case contextSet :: tail => {
-      val innerVectors = contextSet.innerKeys.flatMap(k => localWeights.innerVectors.get(k._1) match {
-        case Some(innerVector) => Option(HSMStepValue(k._1, k._2, innerVector))
-        case _ => None
-      }).toList
-      val leafVectors = contextSet.leafKeys.flatMap(k => localWeights.leafVectors.get(k) match {
-        case Some(leafVector) => Option(k -> leafVector)
-        case _ => None
-      }).toList
+    case contextSet :: tail =>
       val hiddenVector = DenseVector.zeros(vectorSize)
-
-      val partialWeights = trainOnContext(leafVectors, innerVectors, hiddenVector,
-        HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map.empty[String, DenseVector]), learningRate)
-
-      val adjustedWeights =
-        HSMWeightMatrix(localWeights.leafVectors ++ partialWeights.leafVectors, localWeights.innerVectors ++ partialWeights.innerVectors)
-      trainOnPartition(tail, adjustedWeights, learningRate)
-    }
-    case Nil => localWeights
+      val contextWeights = contextSet.weightMatrix ++ partialWeights
+      val updatedWeights = trainOnContext(contextSet.leafVectors, contextSet.innerVectors, hiddenVector, contextWeights, learningRate)
+      trainOnPartition(tail, updatedWeights, learningRate)
+    case Nil => partialWeights
   }
 
   //loops on (target, context) pairs
-  private def trainOnContext[T](leafVectors: List[(T, HSMTargetValue)],
-                                innerVectors: List[HSMStepValue],
-                                hiddenLayer: DenseVector,
-                                partialWeights: HSMWeightMatrix[T],
-                                learningRate: Double): HSMWeightMatrix[T] = leafVectors match {
+  private def trainOnContext(leafVectors: List[(T, HSMTargetValue)],
+                             innerVectors: List[HSMStepValue],
+                             hiddenLayer: DenseVector,
+                             partialWeights: HSMWeightMatrix[T],
+                             learningRate: Double)
+  : HSMWeightMatrix[T] = leafVectors match {
     case leaf :: tail => {
       val (updatedInner, updatedLeaf, updatedHidden) = trainOnWindow(innerVectors, List.empty[HSMStepValue], leaf._2.vector, hiddenLayer, learningRate)
+      //learn weights hidden -> input
       BLAS.axpy(1.0, updatedHidden, updatedLeaf)
-      val updatedWeights = HSMWeightMatrix(
-        partialWeights.leafVectors ++ Map[T, HSMTargetValue](leaf._1 -> leaf._2.copy(vector = updatedLeaf)),
-        partialWeights.innerVectors ++ updatedInner.map(i => i.key -> i.vector))
+      val updatedWeights = partialWeights ++
+        HSMWeightMatrix(Map[T, HSMTargetValue](leaf._1 -> leaf._2.copy(vector = updatedLeaf)),
+          updatedInner.map(i => i.key -> i.vector).toMap)
       trainOnContext(tail, updatedInner, updatedHidden, updatedWeights, learningRate)
     }
     case Nil => partialWeights
