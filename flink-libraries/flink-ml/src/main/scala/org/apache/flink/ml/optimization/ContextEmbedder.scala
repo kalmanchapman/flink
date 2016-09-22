@@ -113,7 +113,7 @@ trait TrainingSet
 
 case class Context[T](target: T, context: Iterable[T])
 
-case class HSMTargetValue(vector: DenseVector, code: Vector[Int], path: Vector[String])
+case class HSMTargetValue(vector: DenseVector, count: Int, code: Vector[Int], path: Vector[String])
 
 case class HSMStepValue(key: String, target: Int, vector: DenseVector)
 
@@ -205,9 +205,50 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
   def createInitialWeightsDS(initialWeights: Option[DataSet[HSMWeightMatrix[T]]],
                               data: DataSet[Context[T]])
   : DataSet[HSMWeightMatrix[T]] = initialWeights match {
-    //check on weight set? - expansion on weight set?
-    case Some(weightMatrix) => weightMatrix
+    case Some(weightMatrix) => extendHSMWeightMatrix(data, weightMatrix)
     case None => formHSMWeightMatrix(data)
+  }
+
+  private def extendHSMWeightMatrix(data: DataSet[Context[T]], weights: DataSet[HSMWeightMatrix[T]])
+  : DataSet[HSMWeightMatrix[T]] = {
+    val env = data.getExecutionEnvironment
+
+    val targets = data
+      .map(x => (x.target, 1))
+      .groupBy(0).sum(1)
+
+    val existing = weights
+      .flatMap(x => x.leafVectors.map(x => x._1 -> x._2.count))
+
+    val combined = targets.union(existing)
+      .groupBy(0).sum(1)
+      .filter(_._2 >= minTargetCount)
+
+    val softMaxTree = env.fromElements(HuffmanBinaryTree.tree(combined.collect()))
+
+    val leafMap = targets
+      .mapWithBcVariable(softMaxTree) {
+        (target, softMaxTree) => {
+          val code = HuffmanBinaryTree.encode(softMaxTree, target._1)
+          val path = HuffmanBinaryTree.path(code)
+          target._1 -> HSMTargetValue(
+            DenseVector.apply(
+              Array.fill(vectorSize)((scala.math.random - 0.5f) / vectorSize)),
+            target._2,
+            code,
+            path
+          )
+        }
+      }
+
+    val innerMap = leafMap
+      .map(l => l._2.path).flatMap(x => x)
+      .distinct()
+      .map(x => x -> DenseVector.zeros(vectorSize))
+
+    val localWeights = weights.collect().head
+
+    env.fromElements(HSMWeightMatrix(leafMap.collect().toMap ++ localWeights.leafVectors, innerMap.collect().toMap))
   }
 
   private def formHSMWeightMatrix(data: DataSet[Context[T]]): DataSet[HSMWeightMatrix[T]] = {
@@ -228,6 +269,7 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
           target._1 -> HSMTargetValue(
             DenseVector.apply(
               Array.fill(vectorSize)((scala.math.random - 0.5f) / vectorSize)),
+            target._2,
             code,
             path
           )
