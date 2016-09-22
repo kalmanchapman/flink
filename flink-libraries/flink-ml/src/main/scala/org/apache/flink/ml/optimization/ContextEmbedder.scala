@@ -19,16 +19,18 @@
 package org.apache.flink.ml.optimization
 
 import breeze.{numerics => BreezeNumerics}
-import org.apache.flink.api.common.typeinfo.TypeInformation
+import org.apache.flink.api.common._
 import org.apache.flink.api.scala._
 import org.apache.flink.ml._
+import org.apache.flink.ml.common.Parameter
 import org.apache.flink.ml.math.{BLAS, DenseVector}
+import org.apache.flink.ml.optimization.Embedder._
 import org.apache.flink.util.Collector
 
 import scala.reflect.ClassTag
 
 /**
-  * some description
+  * some description of a huffman binary tree and why we use it
   */
 
 object HuffmanBinaryTree extends Serializable {
@@ -102,6 +104,31 @@ object HuffmanBinaryTree extends Serializable {
 }
 
 /**
+  * explanations of the supporting classes & traits?
+  */
+
+trait WeightMatrix
+
+trait TrainingSet
+
+case class Context[T](target: T, context: Iterable[T])
+
+case class HSMTargetValue(vector: DenseVector, code: Vector[Int], path: Vector[String])
+
+case class HSMStepValue(key: String, target: Int, vector: DenseVector)
+
+case class HSMTrainingSet[T](leafVectors: List[(T, HSMTargetValue)],
+                             innerVectors: List[HSMStepValue],
+                             weightMatrix: HSMWeightMatrix[T]) extends TrainingSet
+
+case class HSMWeightMatrix[T](leafVectors: Map[T, HSMTargetValue],
+                              innerVectors: Map[String, DenseVector]) extends WeightMatrix {
+  def ++ (that: HSMWeightMatrix[T]): HSMWeightMatrix[T] = {
+    HSMWeightMatrix(this.leafVectors ++ that.leafVectors, this.innerVectors ++ that.innerVectors)
+  }
+}
+
+/**
   * Implements Word2Vec; a word-embedding algoritm first described
   * by Tomáš Mikolov et al in http://arxiv.org/pdf/1301.3781.pdf
   *
@@ -116,33 +143,54 @@ object HuffmanBinaryTree extends Serializable {
   * More on softmax: (https://en.wikipedia.org/wiki/Softmax_function)
   */
 
-case class Context[T](target: T, context: Iterable[T])
+object Embedder {
+  val MIN_LEARNING_RATE = 0.0001
 
-trait WeightMatrix
+  case object Iterations extends Parameter[Int] {
+    val defaultValue = Some(10)
+  }
 
-case class HSMTargetValue(vector: DenseVector, code: Vector[Int], path: Vector[String])
+  case object TargetCount extends Parameter[Int] {
+    val defaultValue = Some(5)
+  }
 
-case class HSMStepValue(key: String, target: Int, vector: DenseVector)
+  case object VectorSize extends Parameter[Int] {
+    val defaultValue = Some(100)
+  }
 
-case class HSMWeightMatrix[T](leafVectors: Map[T, HSMTargetValue],
-                              innerVectors: Map[String, DenseVector]) extends WeightMatrix {
-  def ++ (that: HSMWeightMatrix[T]): HSMWeightMatrix[T] = {
-    HSMWeightMatrix(this.leafVectors ++ that.leafVectors, this.innerVectors ++ that.innerVectors)
+  case object LearningRate extends Parameter[Double] {
+    val defaultValue = Some(0.015)
   }
 }
 
-trait TrainingSet
+abstract class Embedder[A, B] extends Solver[A, B] {
+  import Embedder._
+  def setIterations(iterations: Int): this.type = {
+    parameters.add(Iterations, iterations)
+    this
+  }
 
-case class HSMTrainingSet[T](leafVectors: List[(T, HSMTargetValue)],
-                             innerVectors: List[HSMStepValue],
-                             weightMatrix: HSMWeightMatrix[T]) extends TrainingSet
+  def setTargetCount(targetCount: Int): this.type = {
+    parameters.add(TargetCount, targetCount)
+    this
+  }
 
-class ContextEmbedder[T: ClassTag: TypeInformation] extends Solver[Context[T], HSMWeightMatrix[T]] {
+  def setVectorSize(vectorSize: Int): this.type = {
+    parameters.add(VectorSize, vectorSize)
+    this
+  }
 
-  val numberOfIterations: Int = 10
-  val minTargetCount: Int = 5
-  val vectorSize: Int = 100
-  val learningRate: Double = 0.015
+  def setLearningRate(learningRate: Double): this.type = {
+    parameters.add(LearningRate, learningRate)
+    this
+  }
+}
+
+class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Context[T], HSMWeightMatrix[T]] {
+  val numberOfIterations: Int = parameters(Iterations)
+  val minTargetCount: Int = parameters(TargetCount)
+  val vectorSize: Int = parameters(VectorSize)
+  val learningRate: Double = parameters(LearningRate)
 
   def optimize(data: DataSet[Context[T]],
                initialWeights: Option[DataSet[HSMWeightMatrix[T]]]): DataSet[HSMWeightMatrix[T]] = {
@@ -150,7 +198,7 @@ class ContextEmbedder[T: ClassTag: TypeInformation] extends Solver[Context[T], H
     val initialWeightsDS: DataSet[HSMWeightMatrix[T]] = createInitialWeightsDS(initialWeights, data)
 
     initialWeightsDS.iterate(numberOfIterations) {
-      weights => SkipGram(data, weights, learningRate)
+      weights => FormVectors(data, weights, learningRate)
     }
   }
 
@@ -194,7 +242,7 @@ class ContextEmbedder[T: ClassTag: TypeInformation] extends Solver[Context[T], H
     env.fromElements(HSMWeightMatrix(leafMap.collect().toMap, innerMap.collect().toMap))
   }
 
-  private def SkipGram(data: DataSet[Context[T]],
+  private def FormVectors(data: DataSet[Context[T]],
                        weights: DataSet[HSMWeightMatrix[T]],
                        learningRate: Double)
   : DataSet[HSMWeightMatrix[T]] = {
