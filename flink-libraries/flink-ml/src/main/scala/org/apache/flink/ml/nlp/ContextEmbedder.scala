@@ -19,23 +19,23 @@
 package org.apache.flink.ml.nlp
 
 import breeze.{numerics => BreezeNumerics}
-
+import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.scala._
 import org.apache.flink.ml._
 import org.apache.flink.ml.math.{BLAS, DenseVector}
 import org.apache.flink.ml.optimization.Solver
 import org.apache.flink.util.Collector
 
+import scala.reflect.ClassTag
+
 /**
-  * Implements Word2Vec; a word-embedding algoritm first described
-  * by Tomáš Mikolov et al in http://arxiv.org/pdf/1301.3781.pdf
-  *
-  *
+  * some description
   */
 
 object HuffmanBinaryTree extends Serializable {
-  import scala.collection.mutable.PriorityQueue
-  private abstract class Tree[+A]
+  import collection.mutable
+
+  abstract class Tree[+A]
 
   private type WeightedNode = (Tree[Any], Int)
 
@@ -50,7 +50,7 @@ object HuffmanBinaryTree extends Serializable {
 
   // recursively build the binary tree needed to Huffman encode the text
   // not immutable :(
-  private def merge(xs: PriorityQueue[WeightedNode]): PriorityQueue[WeightedNode] = {
+  private def merge(xs: mutable.PriorityQueue[WeightedNode]): mutable.PriorityQueue[WeightedNode] = {
     if (xs.length == 1) xs
     else {
       val l = xs.dequeue
@@ -63,7 +63,7 @@ object HuffmanBinaryTree extends Serializable {
   //convenience for building and extracting from priority queue
   private def merge(xs: Iterable[WeightedNode]): Iterable[WeightedNode] = {
     //form priority queue, build tree, return a list (should have only 1 member)
-    merge(new PriorityQueue[WeightedNode] ++= xs).toList
+    merge(new mutable.PriorityQueue[WeightedNode] ++= xs).toList
   }
 
   // recursively search the branches of the tree for the required character
@@ -103,6 +103,11 @@ object HuffmanBinaryTree extends Serializable {
 }
 
 /**
+  * Implements Word2Vec; a word-embedding algoritm first described
+  * by Tomáš Mikolov et al in http://arxiv.org/pdf/1301.3781.pdf
+  *
+  *
+  *
   * Hierarchical SoftMax is an approach to the softmax classification solver
   * that utilizes a distributed, sequential representation of class output probabilities
   * via a huffman encoding of known classes and a training process that 'learns'
@@ -133,9 +138,9 @@ case class HSMTrainingSet[T](leafVectors: List[(T, HSMTargetValue)],
                              innerVectors: List[HSMStepValue],
                              weightMatrix: HSMWeightMatrix[T]) extends TrainingSet
 
-class ContextClassifier[T] extends Solver[Context[T], HSMWeightMatrix[T]] {
+class ContextClassifier[T: ClassTag: TypeInformation] extends Solver[Context[T], HSMWeightMatrix[T]] {
 
-  val numberOfIterations: Int = 1
+  val numberOfIterations: Int = 10
   val minTargetCount: Int = 5
   val vectorSize: Int = 100
   val learningRate: Double = 0.015
@@ -162,7 +167,8 @@ class ContextClassifier[T] extends Solver[Context[T], HSMWeightMatrix[T]] {
     val env = data.getExecutionEnvironment
 
     val targets = data
-      .map(x => (x.target, 1)).groupBy(0).sum(1)
+      .map(x => (x.target, 1))
+      .groupBy(0).sum(1)
       .filter(_._2 >= minTargetCount)
 
     val softMaxTree = env.fromElements(HuffmanBinaryTree.tree(targets.collect()))
@@ -183,17 +189,17 @@ class ContextClassifier[T] extends Solver[Context[T], HSMWeightMatrix[T]] {
 
     val innerMap = leafMap
       .map(l => l._2.path).flatMap(x => x)
-      .distinct
+      .distinct()
       .map(x => x -> DenseVector.zeros(vectorSize))
 
-    env.fromElements(HSMWeightMatrix(leafMap.collect.toMap, innerMap.collect.toMap))
+    env.fromElements(HSMWeightMatrix(leafMap.collect().toMap, innerMap.collect().toMap))
   }
 
   private def SkipGram(data: DataSet[Context[T]],
                        weights: DataSet[HSMWeightMatrix[T]],
                        learningRate: Double)
   : DataSet[HSMWeightMatrix[T]] = {
-    val learnedWeights = data
+    lazy val learnedWeights = data
       .mapWithBcVariable(weights)(mapContext)
       .flatMap(x => x)
       .mapPartition((trainingSet, collector: Collector[HSMWeightMatrix[T]]) => {
@@ -257,11 +263,6 @@ class ContextClassifier[T] extends Solver[Context[T], HSMWeightMatrix[T]] {
     case _ => None
   }
 
-  //should comment the heck out of this, as the magic occurs here
-  //we get a 'subset' of leaf vectors, and inner vectors, and we need to loop over each
-  //inner vector for each leaf vector - performing calculations and error updates at each step.
-
-
   //loops on (target, contextSet) pairs
   private def trainOnPartition(contextTrainingSet: List[HSMTrainingSet[T]],
                                partialWeights: HSMWeightMatrix[T],
@@ -282,7 +283,7 @@ class ContextClassifier[T] extends Solver[Context[T], HSMWeightMatrix[T]] {
                              partialWeights: HSMWeightMatrix[T],
                              learningRate: Double)
   : HSMWeightMatrix[T] = leafVectors match {
-    case leaf :: tail => {
+    case leaf :: tail =>
       val (updatedInner, updatedLeaf, updatedHidden) = trainOnWindow(innerVectors, List.empty[HSMStepValue], leaf._2.vector, hiddenLayer, learningRate)
       //learn weights hidden -> input
       BLAS.axpy(1.0, updatedHidden, updatedLeaf)
@@ -290,7 +291,6 @@ class ContextClassifier[T] extends Solver[Context[T], HSMWeightMatrix[T]] {
         HSMWeightMatrix(Map[T, HSMTargetValue](leaf._1 -> leaf._2.copy(vector = updatedLeaf)),
           updatedInner.map(i => i.key -> i.vector).toMap)
       trainOnContext(tail, updatedInner, updatedHidden, updatedWeights, learningRate)
-    }
     case Nil => partialWeights
   }
 
