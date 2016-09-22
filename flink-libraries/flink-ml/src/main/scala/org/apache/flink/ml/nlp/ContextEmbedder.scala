@@ -138,7 +138,7 @@ case class HSMTrainingSet[T](leafVectors: List[(T, HSMTargetValue)],
                              innerVectors: List[HSMStepValue],
                              weightMatrix: HSMWeightMatrix[T]) extends TrainingSet
 
-class ContextClassifier[T: ClassTag: TypeInformation] extends Solver[Context[T], HSMWeightMatrix[T]] {
+class ContextEmbedder[T: ClassTag: TypeInformation] extends Solver[Context[T], HSMWeightMatrix[T]] {
 
   val numberOfIterations: Int = 10
   val minTargetCount: Int = 5
