@@ -251,7 +251,7 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
       .flatMap(x => x)
       .mapPartition((trainingSet, collector: Collector[HSMWeightMatrix[T]]) => {
         trainOnPartition(trainingSet.toList,
-          HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map.empty[String, DenseVector]),learningRate)
+          HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map.empty[String, DenseVector]), learningRate)
       })
 
     val innerVectors = learnedWeights
@@ -316,10 +316,11 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
                                learningRate: Double)
   : HSMWeightMatrix[T] = contextTrainingSet match {
     case contextSet :: tail =>
+      val decayedLearningRate = (learningRate * (1 - (1 / (tail.size + 1)))).max(MIN_LEARNING_RATE)
       val hiddenVector = DenseVector.zeros(vectorSize)
       val contextWeights = contextSet.weightMatrix ++ partialWeights
       val updatedWeights = trainOnContext(contextSet.leafVectors, contextSet.innerVectors, hiddenVector, contextWeights, learningRate)
-      trainOnPartition(tail, updatedWeights, learningRate)
+      trainOnPartition(tail, updatedWeights, decayedLearningRate)
     case Nil => partialWeights
   }
 
