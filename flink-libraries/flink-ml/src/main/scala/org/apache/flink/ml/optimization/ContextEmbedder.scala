@@ -16,14 +16,13 @@
  * limitations under the License.
  */
 
-package org.apache.flink.ml.nlp
+package org.apache.flink.ml.optimization
 
 import breeze.{numerics => BreezeNumerics}
 import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.scala._
 import org.apache.flink.ml._
 import org.apache.flink.ml.math.{BLAS, DenseVector}
-import org.apache.flink.ml.optimization.Solver
 import org.apache.flink.util.Collector
 
 import scala.reflect.ClassTag
