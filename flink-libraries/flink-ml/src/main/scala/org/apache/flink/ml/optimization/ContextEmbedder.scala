@@ -274,14 +274,15 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
             path
           )
         }
-      }
+      }.map(x => HSMWeightMatrix(Map(x), Map.empty[String, DenseVector]))
 
     val innerMap = leafMap
-      .map(l => l._2.path).flatMap(x => x)
+      .flatMap(l => l.leafVectors.values)
+      .flatMap(x => x.path)
       .distinct()
-      .map(x => x -> DenseVector.zeros(vectorSize))
+      .map(x => HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map(x -> DenseVector.zeros(vectorSize))))
 
-    env.fromElements(HSMWeightMatrix(leafMap.collect().toMap, innerMap.collect().toMap))
+    leafMap.union(innerMap).reduce(_ ++ _)
   }
 
   private def FormVectors(data: DataSet[Context[T]],
