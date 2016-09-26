@@ -197,9 +197,10 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
 
     val initialWeightsDS: DataSet[HSMWeightMatrix[T]] = createInitialWeightsDS(initialWeights, data)
 
-    initialWeightsDS.setParallelism(6).iterate(numberOfIterations) {
-      weights => FormVectors(data, weights, learningRate)
-    }
+//    initialWeightsDS.iterate(numberOfIterations) {
+//      weights => FormVectors(data, weights, learningRate)
+//    }
+    FormVectors(data.setParallelism(6), initialWeightsDS, learningRate)
   }
 
   def createInitialWeightsDS(initialWeights: Option[DataSet[HSMWeightMatrix[T]]],
@@ -292,7 +293,6 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
     lazy val learnedWeights = data
       .mapWithBcVariable(weights)(mapContext)
       .flatMap(x => x)
-      .setParallelism(6)
       .mapPartition((trainingSet, collector: Collector[HSMWeightMatrix[T]]) => {
         trainOnPartition(trainingSet.toList,
           HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map.empty[String, DenseVector]), learningRate)
