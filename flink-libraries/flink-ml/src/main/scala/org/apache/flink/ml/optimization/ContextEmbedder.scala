@@ -21,8 +21,9 @@ package org.apache.flink.ml.optimization
 import breeze.{numerics => BreezeNumerics}
 import org.apache.flink.api.common._
 import org.apache.flink.api.scala._
+import org.apache.flink.api.scala.utils._
 import org.apache.flink.ml._
-import org.apache.flink.ml.common.{FlinkMLTools, Parameter}
+import org.apache.flink.ml.common.Parameter
 import org.apache.flink.ml.math.{BLAS, DenseVector}
 import org.apache.flink.ml.optimization.Embedder._
 import org.apache.flink.util.Collector
@@ -289,23 +290,15 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
                        weights: DataSet[HSMWeightMatrix[T]],
                        learningRate: Double)
   : DataSet[HSMWeightMatrix[T]] = {
-
-    val numPartitions = data.getParallelism
-
-    val mappedData = data
+    lazy val learnedWeights = data
       .mapWithBcVariable(weights)(mapContext)
       .flatMap(x => x)
+      .zipWithUniqueId
+      .partitionByHash(0)
+      .mapPartition((trainingSet, collector: Collector[HSMWeightMatrix[T]]) => {
+        trainOnPartition(trainingSet.map(x => x._2).toList,
+          HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map.empty[String, DenseVector]), learningRate)
 
-    val partitioner = FlinkMLTools.ModuloKeyPartitioner
-
-    val splitData = FlinkMLTools.block(mappedData, numPartitions, Some(partitioner))
-
-    lazy val learnedWeights = splitData
-      .mapPartition((trainingSetBlock, collector: Collector[HSMWeightMatrix[T]]) => {
-        for (trainingSet <- trainingSetBlock) {
-          trainOnPartition(trainingSet.values.toList,
-            HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map.empty[String, DenseVector]), learningRate)
-        }
       })
 
     val innerVectors = learnedWeights
