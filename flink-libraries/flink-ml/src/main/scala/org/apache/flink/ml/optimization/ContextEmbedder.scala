@@ -22,7 +22,7 @@ import breeze.{numerics => BreezeNumerics}
 import org.apache.flink.api.common._
 import org.apache.flink.api.scala._
 import org.apache.flink.ml._
-import org.apache.flink.ml.common.Parameter
+import org.apache.flink.ml.common.{FlinkMLTools, Parameter}
 import org.apache.flink.ml.math.{BLAS, DenseVector}
 import org.apache.flink.ml.optimization.Embedder._
 import org.apache.flink.util.Collector
@@ -240,16 +240,15 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
             path
           )
         }
-      }
+      }.map(x => HSMWeightMatrix(Map(x), Map.empty[String, DenseVector]))
 
     val innerMap = leafMap
-      .map(l => l._2.path).flatMap(x => x)
+      .flatMap(l => l.leafVectors.values)
+      .flatMap(x => x.path)
       .distinct()
-      .map(x => x -> DenseVector.zeros(vectorSize))
+      .map(x => HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map(x -> DenseVector.zeros(vectorSize))))
 
-    val localWeights = weights.collect().head
-
-    env.fromElements(HSMWeightMatrix(leafMap.collect().toMap ++ localWeights.leafVectors, innerMap.collect().toMap))
+    weights.union(leafMap).union(innerMap).reduce(_ ++ _)
   }
 
   private def formHSMWeightMatrix(data: DataSet[Context[T]]): DataSet[HSMWeightMatrix[T]] = {
@@ -290,12 +289,23 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
                        weights: DataSet[HSMWeightMatrix[T]],
                        learningRate: Double)
   : DataSet[HSMWeightMatrix[T]] = {
-    lazy val learnedWeights = data
+
+    val numPartitions = data.getParallelism
+
+    val mappedData = data
       .mapWithBcVariable(weights)(mapContext)
       .flatMap(x => x)
-      .mapPartition((trainingSet, collector: Collector[HSMWeightMatrix[T]]) => {
-        trainOnPartition(trainingSet.toList,
-          HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map.empty[String, DenseVector]), learningRate)
+
+    val partitioner = FlinkMLTools.ModuloKeyPartitioner
+
+    val splitData = FlinkMLTools.block(mappedData, numPartitions, Some(partitioner))
+
+    lazy val learnedWeights = splitData
+      .mapPartition((trainingSetBlock, collector: Collector[HSMWeightMatrix[T]]) => {
+        for (trainingSet <- trainingSetBlock) {
+          trainOnPartition(trainingSet.values.toList,
+            HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map.empty[String, DenseVector]), learningRate)
+        }
       })
 
     val innerVectors = learnedWeights
