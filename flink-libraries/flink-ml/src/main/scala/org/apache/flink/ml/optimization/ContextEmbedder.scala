@@ -290,6 +290,7 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
                        learningRate: Double)
   : DataSet[HSMWeightMatrix[T]] = {
     lazy val learnedWeights = data
+      .setParallelism(6)
       .mapWithBcVariable(weights)(mapContext)
       .flatMap(x => x)
       .mapPartition((trainingSet, collector: Collector[HSMWeightMatrix[T]]) => {
