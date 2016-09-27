@@ -25,7 +25,6 @@ import org.apache.flink.ml._
 import org.apache.flink.ml.common.Parameter
 import org.apache.flink.ml.math.{BLAS, DenseVector}
 import org.apache.flink.ml.optimization.Embedder._
-import org.apache.flink.util.Collector
 
 import scala.reflect.ClassTag
 
@@ -292,10 +291,9 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
     lazy val learnedWeights = data
       .mapWithBcVariable(weights)(mapContext)
       .flatMap(x => x)
-      .mapPartition((trainingSet, collector: Collector[HSMWeightMatrix[T]]) => {
-        trainOnPartition(trainingSet.toList,
-          HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map.empty[String, DenseVector]), learningRate)
-      })
+      .mapPartition(trainingSet => Some(
+          trainOnPartition(trainingSet.toList,
+            HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map.empty[String, DenseVector]), learningRate)))
 
     val innerVectors = learnedWeights
       .flatMap(x => x.innerVectors.toSeq)
