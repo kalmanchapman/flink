@@ -204,7 +204,7 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
   def createInitialWeightsDS(initialWeights: Option[DataSet[HSMWeightMatrix[T]]],
                               data: DataSet[Context[T]])
   : DataSet[HSMWeightMatrix[T]] = initialWeights match {
-    case Some(weightMatrix) => extendHSMWeightMatrix(data, weightMatrix)
+    case Some(weightMatrix) => weightMatrix //extendHSMWeightMatrix(data, weightMatrix)
     case None => formHSMWeightMatrix(data)
   }
 
@@ -289,11 +289,8 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
                        learningRate: Double)
   : DataSet[HSMWeightMatrix[T]] = {
     lazy val learnedWeights = data
-      .mapWithBcVariable(weights)(mapContext)
-      .flatMap(x => x)
-      .mapPartition(trainingSet => Some(
-          trainOnPartition(trainingSet.toList,
-            HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map.empty[String, DenseVector]), learningRate)))
+      .mapPartition(x => Some(x.toList))
+      .mapWithBcVariable(weights)(train)
 
     val innerVectors = learnedWeights
       .flatMap(x => x.innerVectors.toSeq)
@@ -329,6 +326,30 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
       .reduce((a,b) => a ++ b)
   }
 
+  private def train(context: List[Context[T]],
+                    partialWeights: HSMWeightMatrix[T])
+  : HSMWeightMatrix[T] = trainOnPartition(context, partialWeights, None)
+
+  //loops on (target, contextSet) pairs
+  private def trainOnPartition(contextTrainingSet: List[Context[T]],
+                               partialWeights: HSMWeightMatrix[T],
+                               localLearningRate: Option[Double])
+  : HSMWeightMatrix[T] = contextTrainingSet match {
+    case contextSet :: tail =>
+      mapContext(contextSet, partialWeights) match {
+        case Some(trainingSet) =>
+          val decayedLearningRate = (localLearningRate.getOrElse(learningRate) * (1 - (1 / (tail.size + 1)))).max(MIN_LEARNING_RATE)
+          val hiddenVector = DenseVector.zeros(vectorSize)
+          val updatedWeights = trainOnContext(trainingSet.leafVectors, trainingSet.innerVectors,
+            hiddenVector, partialWeights, decayedLearningRate)
+          trainOnPartition(tail, updatedWeights, Some(decayedLearningRate))
+        case None =>
+          trainOnPartition(tail, partialWeights, localLearningRate)
+      }
+    case Nil => partialWeights
+  }
+
+
   private def mapContext(data: Context[T],
                          weights: HSMWeightMatrix[T])
   : Option[HSMTrainingSet[T]] = weights.leafVectors.get(data.target) match {
@@ -342,27 +363,13 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
             case _ => None
           }).toList,
           inner.zip(targetValue.code)
-              .flatMap(k => weights.innerVectors.get(k._1) match {
-                case Some(innerVector) => Option(HSMStepValue(k._1, k._2, innerVector))
-                case _ => None
-              }).toList,
+            .flatMap(k => weights.innerVectors.get(k._1) match {
+              case Some(innerVector) => Option(HSMStepValue(k._1, k._2, innerVector))
+              case _ => None
+            }).toList,
           HSMWeightMatrix(weights.leafVectors.filterKeys(leaf.toSet),
             weights.innerVectors.filterKeys(inner.toSet))))
     case _ => None
-  }
-
-  //loops on (target, contextSet) pairs
-  private def trainOnPartition(contextTrainingSet: List[HSMTrainingSet[T]],
-                               partialWeights: HSMWeightMatrix[T],
-                               learningRate: Double)
-  : HSMWeightMatrix[T] = contextTrainingSet match {
-    case contextSet :: tail =>
-      val decayedLearningRate = (learningRate * (1 - (1 / (tail.size + 1)))).max(MIN_LEARNING_RATE)
-      val hiddenVector = DenseVector.zeros(vectorSize)
-      val contextWeights = contextSet.weightMatrix ++ partialWeights
-      val updatedWeights = trainOnContext(contextSet.leafVectors, contextSet.innerVectors, hiddenVector, contextWeights, learningRate)
-      trainOnPartition(tail, updatedWeights, decayedLearningRate)
-    case Nil => partialWeights
   }
 
   //loops on (target, context) pairs
