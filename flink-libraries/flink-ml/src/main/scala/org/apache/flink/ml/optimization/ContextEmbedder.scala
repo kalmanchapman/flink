@@ -50,7 +50,8 @@ object HuffmanBinaryTree extends Serializable {
 
   // recursively build the binary tree needed to Huffman encode the text
   // not immutable :(
-  private def merge(xs: mutable.PriorityQueue[WeightedNode]): mutable.PriorityQueue[WeightedNode] = {
+  private def merge(xs: mutable.PriorityQueue[WeightedNode])
+  : mutable.PriorityQueue[WeightedNode] = {
     if (xs.length == 1) xs
     else {
       val l = xs.dequeue
@@ -77,11 +78,12 @@ object HuffmanBinaryTree extends Serializable {
     def turn(tree: Tree[Any], value: Any,
              code: Vector[Int]): Vector[Int] = tree match {
       case Leaf(_) => code
-      case Branch(l, r) =>
+      case Branch(l, r) => {
         if (contains(l, value))
           turn(l, value, code :+ 0)
         else
           turn(r, value, code :+ 1)
+      }
     }
     turn(tree, value, Vector.empty[Int])
   }
@@ -185,7 +187,9 @@ abstract class Embedder[A, B] extends Solver[A, B] {
   }
 }
 
-class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Context[T], HSMWeightMatrix[T]] {
+class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
+  extends Embedder[Context[T], HSMWeightMatrix[T]] {
+
   val numberOfIterations: Int = parameters(Iterations)
   val minTargetCount: Int = parameters(TargetCount)
   val vectorSize: Int = parameters(VectorSize)
@@ -247,10 +251,13 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
 
     val localWeights = weights.collect().head
 
-    env.fromElements(HSMWeightMatrix(leafMap.collect().toMap ++ localWeights.leafVectors, innerMap.collect().toMap))
+    env.fromElements(
+      HSMWeightMatrix(
+        leafMap.collect().toMap ++ localWeights.leafVectors, innerMap.collect().toMap))
   }
 
-  private def formHSMWeightMatrix(data: DataSet[Context[T]]): DataSet[HSMWeightMatrix[T]] = {
+  private def formHSMWeightMatrix(data: DataSet[Context[T]])
+  : DataSet[HSMWeightMatrix[T]] = {
     val env = data.getExecutionEnvironment
 
     val targets = data
@@ -279,7 +286,8 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
       .flatMap(l => l.leafVectors.values)
       .flatMap(x => x.path)
       .distinct()
-      .map(x => HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map(x -> DenseVector.zeros(vectorSize))))
+      .map(x =>
+        HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map(x -> DenseVector.zeros(vectorSize))))
 
     leafMap.union(innerMap).reduce(_ ++ _)
   }
@@ -338,7 +346,9 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
     case contextSet :: tail =>
       mapContext(contextSet, partialWeights) match {
         case Some(trainingSet) =>
-          val decayedLearningRate = (localLearningRate.getOrElse(learningRate) * (1 - (1 / (tail.size + 1)))).max(MIN_LEARNING_RATE)
+          val decayedLearningRate =
+            (localLearningRate.getOrElse(learningRate) * (1 - (1 / (tail.size + 1))))
+              .max(MIN_LEARNING_RATE)
           val hiddenVector = DenseVector.zeros(vectorSize)
           val updatedWeights = trainOnContext(trainingSet.leafVectors, trainingSet.innerVectors,
             hiddenVector, partialWeights, decayedLearningRate)
@@ -380,7 +390,9 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation] extends Embedder[Co
                              learningRate: Double)
   : HSMWeightMatrix[T] = leafVectors match {
     case leaf :: tail =>
-      val (updatedInner, updatedLeaf, updatedHidden) = trainOnWindow(innerVectors, List.empty[HSMStepValue], leaf._2.vector, hiddenLayer, learningRate)
+      val (updatedInner, updatedLeaf, updatedHidden) =
+        trainOnWindow(
+          innerVectors, List.empty[HSMStepValue], leaf._2.vector, hiddenLayer, learningRate)
       //learn weights hidden -> input
       BLAS.axpy(1.0, updatedHidden, updatedLeaf)
       val updatedWeights = partialWeights ++
