@@ -18,15 +18,12 @@
 
 package org.apache.flink.ml.nlp
 
-import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.scala._
 import org.apache.flink.ml._
 import org.apache.flink.ml.common.{Parameter, ParameterMap}
 import org.apache.flink.ml.math.DenseVector
 import org.apache.flink.ml.optimization.{Context, ContextEmbedder, HSMWeightMatrix}
 import org.apache.flink.ml.pipeline.{FitOperation, TransformDataSetOperation, Transformer}
-
-import scala.reflect.ClassTag
 
 /**
   * Created by kal on 9/22/16.
@@ -62,6 +59,11 @@ class Word2Vec extends Transformer[Word2Vec] {
     this
   }
 
+  def setBatchSize(batchSize: Int): this.type = {
+    parameters.add(BatchSize, batchSize)
+    this
+  }
+
 }
 
 object Word2Vec {
@@ -83,6 +85,10 @@ object Word2Vec {
 
   case object WindowSize extends Parameter[Int] {
     val defaultValue = Some(10)
+  }
+
+  case object BatchSize extends Parameter[Int] {
+    val defaultValue = Some(1000)
   }
 
   def apply(): Word2Vec = {
@@ -110,6 +116,7 @@ object Word2Vec {
           .setTargetCount(fitParameters(TargetCount))
           .setVectorSize(fitParameters(VectorSize))
           .setLearningRate(fitParameters(LearningRate))
+          .setBatchSize(fitParameters(BatchSize))
           .optimize(skipGrams, instance.wordVectors)
 
         instance.wordVectors = Some(weights)
