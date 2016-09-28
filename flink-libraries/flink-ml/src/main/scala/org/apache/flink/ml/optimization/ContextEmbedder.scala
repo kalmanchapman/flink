@@ -78,12 +78,11 @@ object HuffmanBinaryTree extends Serializable {
     def turn(tree: Tree[Any], value: Any,
              code: Vector[Int]): Vector[Int] = tree match {
       case Leaf(_) => code
-      case Branch(l, r) => {
-        if (contains(l, value))
-          turn(l, value, code :+ 0)
-        else
-          turn(r, value, code :+ 1)
-      }
+      case Branch(l, r) =>
+        (contains(l, value)) match {
+          case true => turn(l, value, code :+ 0)
+          case _ => turn(r, value, code :+ 1)
+        }
     }
     turn(tree, value, Vector.empty[Int])
   }
