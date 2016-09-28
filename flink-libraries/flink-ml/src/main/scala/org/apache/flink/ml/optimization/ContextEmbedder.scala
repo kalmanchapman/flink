@@ -21,6 +21,7 @@ package org.apache.flink.ml.optimization
 import breeze.{numerics => BreezeNumerics}
 import org.apache.flink.api.common._
 import org.apache.flink.api.scala._
+import org.apache.flink.api.scala.utils._
 import org.apache.flink.ml._
 import org.apache.flink.ml.common.Parameter
 import org.apache.flink.ml.math.{BLAS, DenseVector}
@@ -117,9 +118,15 @@ case class HSMTargetValue(vector: DenseVector, count: Int, code: Vector[Int], pa
 
 case class HSMStepValue(key: String, target: Int, vector: DenseVector)
 
-case class HSMTrainingSet[T](leafVectors: List[(T, HSMTargetValue)],
-                             innerVectors: List[HSMStepValue],
-                             weightMatrix: HSMWeightMatrix[T]) extends TrainingSet
+case class HSMTrainingSet[T](leaf: Seq[T],
+                             inner: Seq[String]) extends TrainingSet
+
+case class LocalWeightMatrix[T](leafVectors: Map[T, DenseVector],
+                                innerVectors: Map[String, DenseVector]) extends WeightMatrix {
+  def ++ (that: LocalWeightMatrix[T]): LocalWeightMatrix[T] = {
+    LocalWeightMatrix(this.leafVectors ++ that.leafVectors, this.innerVectors ++ that.innerVectors)
+  }
+}
 
 case class HSMWeightMatrix[T](leafVectors: Map[T, HSMTargetValue],
                               innerVectors: Map[String, DenseVector]) extends WeightMatrix {
@@ -161,6 +168,10 @@ object Embedder {
   case object LearningRate extends Parameter[Double] {
     val defaultValue = Some(0.015)
   }
+
+  case object BatchSize extends Parameter[Int] {
+    val defaultValue = Some(1000)
+  }
 }
 
 abstract class Embedder[A, B] extends Solver[A, B] {
@@ -184,6 +195,11 @@ abstract class Embedder[A, B] extends Solver[A, B] {
     parameters.add(LearningRate, learningRate)
     this
   }
+
+  def setBatchSize(batchSize: Int): this.type = {
+    parameters.add(BatchSize, batchSize)
+    this
+  }
 }
 
 class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
@@ -191,6 +207,7 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
 
   val numberOfIterations: Int = parameters(Iterations)
   val minTargetCount: Int = parameters(TargetCount)
+  val batchSize: Int = parameters(BatchSize)
   val vectorSize: Int = parameters(VectorSize)
   val learningRate: Double = parameters(LearningRate)
 
@@ -295,11 +312,58 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
                        weights: DataSet[HSMWeightMatrix[T]],
                        learningRate: Double)
   : DataSet[HSMWeightMatrix[T]] = {
-    lazy val learnedWeights = data
-      .mapPartition(x => Some(x.toList))
-      .mapWithBcVariable(weights)(train)
 
-    val innerVectors = learnedWeights
+    val leafTargetVals = weights
+      .flatMap(x => x.leafVectors)
+
+    val leafWeights = leafTargetVals
+      .map(x => (x._1, x._2.vector))
+
+    val innerWeights = weights
+      .flatMap(x => x.innerVectors)
+
+    val leafPath = weights
+      .flatMap(x => x.leafVectors)
+      .map(x => (x._1, x._2.path))
+
+    val indexedData = data
+      .zipWithUniqueId
+
+    val indexedTarget = indexedData.map(x => (x._1, x._2.target))
+    val indexedContext = indexedData.flatMap(x => x._2.context.map(y => (x._1, y)))
+
+    val vectorizedContext = indexedContext
+      .joinWithTiny(leafWeights).where(1).equalTo(0)
+      .map(x => Seq(x._1._2 -> x._2._2) -> x._1._1)
+      .groupBy(1)
+      .reduce((a,b) => a._1 ++ b._1 -> a._2)
+
+    val vectorizedTargets = indexedTarget
+      .joinWithTiny(leafPath).where(1).equalTo(0)
+      .flatMap(x => x._2._2.zipWithIndex.map(y => Seq(x._1._1 -> y._2) -> y._1))
+      .groupBy(1)
+      .reduce((a,b) => a._1 ++ b._1 -> a._2)
+      .joinWithTiny(innerWeights).where(1).equalTo(0)
+      .flatMap(x => x._1._1.map(y => Seq(x._2 -> y._2) -> y._1))
+      .groupBy(1)
+      .reduce((a,b) => a._1 ++ b._1 -> a._2)
+      .map(x => x._1.sortBy(y => y._2).map(y => y._1) -> x._2)
+
+    val learnedWeights : DataSet[LocalWeightMatrix[T]] = vectorizedContext
+      .join(vectorizedTargets).where(1).equalTo(1)
+      .map(x => x._2._1 -> x._1._1 -> x._1._2)
+      .map(x => {
+        val contextSet = x._1
+        val localWeights = LocalWeightMatrix(contextSet._2.toMap, contextSet._1.toMap)
+        val trainingSet = HSMTrainingSet(contextSet._2.map(y => y._1), contextSet._1.map(y => y._1))
+        Seq(trainingSet) -> localWeights -> x._2 % batchSize
+      })
+      .partitionByHash(1)
+      .groupBy(1)
+      .reduce((a,b) => ((a._1._1 ++ b._1._1, a._1._2 ++ b._1._2), a._2))
+      .map(x => train(x._1._1, x._1._2, learningRate))
+
+    val learnedInnerWeights = learnedWeights
       .flatMap(x => x.innerVectors.toSeq)
       .groupBy(_._1)
       .reduceGroup(learnedVecs => {
@@ -310,114 +374,83 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
           (a._1, bVec)
         })
       })
-      .map(x => Map(x))
+      .map(x => HSMWeightMatrix[T](Map.empty, Map(x)))
       .reduce(_ ++ _)
-      .map(x => HSMWeightMatrix[T](Map.empty, x))
 
-    val leafWeights = learnedWeights
-      .flatMap(x => x.leafVectors.toSeq)
+    val learnedLeafWeights = learnedWeights
+      .flatMap(x => x.leafVectors)
       .groupBy(_._1)
       .reduceGroup(learnedVecs => {
         learnedVecs.reduce((a,b) => {
-          val aVec = a._2.vector
-          val bVec = b._2.vector
+          val aVec = a._2
+          val bVec = b._2
           BLAS.axpy(1, aVec, bVec)
-          (a._1, b._2.copy(vector = bVec))
+          (a._1, bVec)
         })
       })
-      .map(x => Map(x))
+      .join(leafTargetVals).where(0).equalTo(0)
+      .map(x => HSMWeightMatrix[T](Map(x._2._1 -> x._2._2.copy(vector = x._1._2)), Map.empty))
       .reduce(_ ++ _)
-      .map(x => HSMWeightMatrix[T](x, Map.empty))
 
-    weights.union(leafWeights).union(innerVectors)
+    weights.union(learnedLeafWeights).union(learnedInnerWeights)
       .reduce((a,b) => a ++ b)
   }
 
-  private def train(context: List[Context[T]],
-                    partialWeights: HSMWeightMatrix[T])
-  : HSMWeightMatrix[T] = trainOnPartition(context, partialWeights, None)
-
-  //loops on (target, contextSet) pairs
-  private def trainOnPartition(contextTrainingSet: List[Context[T]],
-                               partialWeights: HSMWeightMatrix[T],
-                               localLearningRate: Option[Double])
-  : HSMWeightMatrix[T] = contextTrainingSet match {
-    case contextSet :: tail =>
-      mapContext(contextSet, partialWeights) match {
-        case Some(trainingSet) =>
-          val decayedLearningRate =
-            (localLearningRate.getOrElse(learningRate) * (1 - (1 / (tail.size + 1))))
-              .max(MIN_LEARNING_RATE)
-          val hiddenVector = DenseVector.zeros(vectorSize)
-          val updatedWeights = trainOnContext(trainingSet.leafVectors, trainingSet.innerVectors,
-            hiddenVector, partialWeights, decayedLearningRate)
-          trainOnPartition(tail, updatedWeights, Some(decayedLearningRate))
-        case None =>
-          trainOnPartition(tail, partialWeights, localLearningRate)
-      }
-    case Nil => partialWeights
+  private def train(context: Seq[HSMTrainingSet[T]],
+                    weights: LocalWeightMatrix[T],
+                    learningRate: Double)
+  : LocalWeightMatrix[T] = context match {
+    case trainingSet :: tail =>
+      val leafVectors = trainingSet.leaf.flatMap(x => weights.leafVectors.get(x) match {
+        case Some(vector) => Some(x -> vector)
+        case None => None
+      })
+      val innerVectors = trainingSet.inner.flatMap(x => weights.innerVectors.get(x) match {
+        case Some(vector) => Some(x -> vector)
+        case None => None
+      })
+      val decayedLearningRate = learningRate * 1 - (1 / (tail.size + 1))
+      val hiddenVector = DenseVector.zeros(vectorSize)
+      val updatedWeights =
+        trainOnContext(leafVectors, innerVectors, hiddenVector, weights, decayedLearningRate)
+      train(tail, weights ++ updatedWeights, decayedLearningRate)
+    case Nil => weights
   }
 
-
-  private def mapContext(data: Context[T],
-                         weights: HSMWeightMatrix[T])
-  : Option[HSMTrainingSet[T]] = weights.leafVectors.get(data.target) match {
-    case Some(targetValue) =>
-      val leaf = data.context
-      val inner = targetValue.path
-      Option(
-        HSMTrainingSet(
-          leaf.flatMap(k => weights.leafVectors.get(k) match {
-            case Some(leafVector) => Option(k -> leafVector)
-            case _ => None
-          }).toList,
-          inner.zip(targetValue.code)
-            .flatMap(k => weights.innerVectors.get(k._1) match {
-              case Some(innerVector) => Option(HSMStepValue(k._1, k._2, innerVector))
-              case _ => None
-            }).toList,
-          HSMWeightMatrix(weights.leafVectors.filterKeys(leaf.toSet),
-            weights.innerVectors.filterKeys(inner.toSet))))
-    case _ => None
-  }
-
-  //loops on (target, context) pairs
-  private def trainOnContext(leafVectors: List[(T, HSMTargetValue)],
-                             innerVectors: List[HSMStepValue],
+  private def trainOnContext(leafVectors: Seq[(T, DenseVector)],
+                             innerVectors: Seq[(String, DenseVector)],
                              hiddenLayer: DenseVector,
-                             partialWeights: HSMWeightMatrix[T],
+                             weights: LocalWeightMatrix[T],
                              learningRate: Double)
-  : HSMWeightMatrix[T] = leafVectors match {
+  : LocalWeightMatrix[T] = leafVectors match {
     case leaf :: tail =>
       val (updatedInner, updatedLeaf, updatedHidden) =
         trainOnWindow(
-          innerVectors, List.empty[HSMStepValue], leaf._2.vector, hiddenLayer, learningRate)
+          innerVectors, Seq.empty[(String, DenseVector)], leaf._2, hiddenLayer, learningRate)
       //learn weights hidden -> input
       BLAS.axpy(1.0, updatedHidden, updatedLeaf)
-      val updatedWeights = partialWeights ++
-        HSMWeightMatrix(Map[T, HSMTargetValue](leaf._1 -> leaf._2.copy(vector = updatedLeaf)),
-          updatedInner.map(i => i.key -> i.vector).toMap)
-      trainOnContext(tail, updatedInner, updatedHidden, updatedWeights, learningRate)
-    case Nil => partialWeights
+      val updatedWeights = weights ++ LocalWeightMatrix(
+        Map[T, DenseVector](), Map[String, DenseVector]())
+          trainOnContext(tail, updatedInner, updatedHidden, updatedWeights, learningRate)
+    case Nil => weights
   }
 
-  //loops on (targetVec, context) vector pairs in window
-  private def trainOnWindow(inputVectors: List[HSMStepValue],
-                            outputVectors: List[HSMStepValue],
+  private def trainOnWindow(inputVectors: Seq[(String, DenseVector)],
+                            outputVectors: Seq[(String, DenseVector)],
                             leaf: DenseVector,
                             hidden: DenseVector,
                             learningRate: Double)
-  : (List[HSMStepValue], DenseVector, DenseVector) = inputVectors match {
-    case inner::tail =>
-      val forwardPass = BLAS.dot(leaf, inner.vector)
-      val nonLinearity = BreezeNumerics.sigmoid(forwardPass)
-      val gradient = (1 - inner.target - nonLinearity) * learningRate
-      //axpy works on vectors in place
-      //backprop from output -> hidden
-      BLAS.axpy(gradient, inner.vector, hidden)
-      //learn weights hidden -> output
-      BLAS.axpy(gradient, leaf, inner.vector)
-      trainOnWindow(tail, inner :: outputVectors, leaf, hidden, learningRate)
-    case Nil => (outputVectors, leaf, hidden)
-  }
+  : (Seq[(String, DenseVector)], DenseVector, DenseVector) = inputVectors match {
+      case inner::tail =>
+        val forwardPass = BLAS.dot(leaf, inner._2)
+        val nonLinearity = BreezeNumerics.sigmoid(forwardPass)
+        val gradient = (1 - inner._1.reverse.head.toInt - nonLinearity) * learningRate
+        //axpy works on vectors in place
+        //backprop from output -> hidden
+        BLAS.axpy(gradient, inner._2, hidden)
+        //learn weights hidden -> output
+        BLAS.axpy(gradient, leaf, inner._2)
+        trainOnWindow(tail, outputVectors :+ inner, leaf, hidden, learningRate)
+      case Nil => (outputVectors, leaf, hidden)
+    }
 }
