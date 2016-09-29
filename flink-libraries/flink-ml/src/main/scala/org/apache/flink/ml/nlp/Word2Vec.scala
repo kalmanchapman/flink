@@ -110,22 +110,39 @@ object Word2Vec {
           .setTargetCount(fitParameters(TargetCount))
           .setVectorSize(fitParameters(VectorSize))
           .setLearningRate(fitParameters(LearningRate))
-          .optimize(skipGrams, instance.wordVectors)
+          .createInitialWeightsDS(instance.wordVectors, skipGrams)
 
         instance.wordVectors = Some(weights)
       }
     }
   }
 
-  implicit def words2Vecs = {
-    new TransformDataSetOperation[Word2Vec, String, (String, DenseVector)] {
+  implicit def words2Vecs[T <: Iterable[String]] = {
+    new TransformDataSetOperation[Word2Vec, T, (String, DenseVector)] {
       override def transformDataSet(
         instance: Word2Vec,
         transformParameters: ParameterMap,
-        input: DataSet[String]) : DataSet[(String, DenseVector)] = {
+        input: DataSet[T]) : DataSet[(String, DenseVector)] = {
           instance.wordVectors match {
             case Some(vectors) =>
-              input.mapWithBcVariable(vectors) {
+              val skipGrams = input
+                .flatMap(x =>
+                  x.zipWithIndex
+                    .map(z => {
+                      val window = (scala.math.random * 100 % transformParameters(WindowSize)).toInt
+                      Context[String](
+                        z._1, x.slice(z._2 - window, z._2) ++ x.slice(z._2 +1, z._2 + window))
+                    }))
+
+              val learnedVectors = new ContextEmbedder[String]
+                .setIterations(transformParameters(Iterations))
+                .setTargetCount(transformParameters(TargetCount))
+                .setVectorSize(transformParameters(VectorSize))
+                .setLearningRate(transformParameters(LearningRate))
+                .optimize(skipGrams, instance.wordVectors)
+
+              input.flatMap(x => x).distinct()
+                .mapWithBcVariable(learnedVectors) {
                 (t, weights) => weights.leafVectors.get(t) match {
                   case Some(value) => (t, value.vector)
                   case None => (t, DenseVector())
