@@ -319,31 +319,22 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
     val localWeights = weights
       .map(x =>
         LocalWeightMatrix(
-          x.leafVectors.map(y => y._1 -> y._2.vector).toMap,
+          x.leafVectors.map(y => y._1 -> y._2.vector),
           x.innerVectors))
 
     val leafPaths = weights
       .flatMap(x => x.leafVectors)
       .flatMap(x => x._2.path.map(y => x._1 -> y))
 
-    val indexedData = data
-      .zipWithUniqueId
-
-    val indexedContext = indexedData.flatMap(x => x._2.context.map(y => (x._1, y)))
-    val indexedTargets = indexedData
-      .map(x => (x._1, x._2.target))
+    val trainingSets = data
+      .map(x => x -> x.target)
       .coGroup(leafPaths).where(1).equalTo(0) {
-      (target, path) =>
+      (context, path) =>
         val p = path.map(x => x._2)
-        target.map(y => p.to[Seq] -> y._1)
+        context.map(x => HSMTrainingSet(x._1.context.to[Seq], p.to[Seq]))
     }.flatMap(x => x)
-
-    val trainingSets = indexedTargets
-      .join(indexedContext).where(1).equalTo(0)
-      .map(x => Seq(x._2._2) -> x._1._1 -> x._1._2)
-      .groupBy(1)
-      .reduce((a,b) => a._1._1 ++ b._1._1 -> a._1._2 -> a._2)
-      .map(x => Seq(HSMTrainingSet(x._1._1, x._1._2)) -> x._2 % batchSize)
+    .filter(x => x.inner.nonEmpty)
+    .zipWithUniqueId.map(x => Seq(x._2) -> x._1 % batchSize)
 
     val learnedWeights = trainingSets
       .groupBy(1)
@@ -393,6 +384,7 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
                     alpha: Option[Double])
   : LocalWeightMatrix[T] = context match {
     case trainingSet :: tail =>
+      val localAlpha = alpha.getOrElse(learningRate)
       val leafVectors = trainingSet.leaf.flatMap(x => weights.leafVectors.get(x) match {
         case Some(vector) => Some(x -> vector)
         case None => None
@@ -401,7 +393,7 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
         case Some(vector) => Some(x -> vector)
         case None => None
       })
-      val decayedAlpha = alpha.getOrElse(learningRate) * 1 - (1 / (tail.size + 1))
+      val decayedAlpha =  localAlpha * 1 - (1 / (tail.size + 1))
       val hiddenVector = DenseVector.zeros(vectorSize)
       val updatedWeights =
         trainOnContext(leafVectors, innerVectors, hiddenVector, weights, decayedAlpha)
@@ -422,7 +414,7 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
       //learn weights hidden -> input
       BLAS.axpy(1.0, updatedHidden, updatedLeaf)
       val updatedWeights = weights ++ LocalWeightMatrix(
-        Map[T, DenseVector](), Map[String, DenseVector]())
+        Map(leaf._1 -> updatedLeaf), updatedInner.toMap)
           trainOnContext(tail, updatedInner, updatedHidden, updatedWeights, learningRate)
     case Nil => weights
   }
