@@ -91,7 +91,7 @@ object Word2Vec {
   }
 
   case object Seed extends Parameter[Long] {
-    val defaultValue = None
+    val defaultValue = Some(scala.util.Random.nextLong)
   }
 
   def apply(): Word2Vec = {
@@ -128,47 +128,47 @@ object Word2Vec {
   }
 
   implicit def words2Vecs[T <: Iterable[String]] = {
-    new TransformDataSetOperation[Word2Vec, T, (String, Array[Float])] {
+    new TransformDataSetOperation[Word2Vec, T, (String, Vector[Double])] {
       override def transformDataSet(
-        instance: Word2Vec,
-        transformParameters: ParameterMap,
-        input: DataSet[T]) : DataSet[(String, Array[Float])] = {
-          instance.wordVectors match {
-            case Some(vectors) =>
-              val skipGrams = input
-                .flatMap(x =>
-                  x.zipWithIndex
-                    .map(z => {
-                      val window = (scala.math.random * 100 % transformParameters(WindowSize)).toInt
-                      Context[String](
-                        z._1, x.slice(z._2 - window, z._2) ++ x.slice(z._2 +1, z._2 + window))
-                    }))
+                                     instance: Word2Vec,
+                                     transformParameters: ParameterMap,
+                                     input: DataSet[T]): DataSet[(String, Vector[Double])] = {
+        instance.wordVectors match {
+          case Some(vectors) =>
+            val skipGrams = input
+              .flatMap(x =>
+                x.zipWithIndex
+                  .map(z => {
+                    val window = (scala.math.random * 100 % transformParameters(WindowSize)).toInt
+                    Context[String](
+                      z._1, x.slice(z._2 - window, z._2) ++ x.slice(z._2 + 1, z._2 + window))
+                  }))
 
-              val learnedVectors = new ContextEmbedder[String]
-                .setIterations(transformParameters(Iterations))
-                .setTargetCount(transformParameters(TargetCount))
-                .setVectorSize(transformParameters(VectorSize))
-                .setLearningRate(transformParameters(LearningRate))
-                .setSeed(transformParameters(Seed))
-                .optimize(skipGrams, instance.wordVectors)
+            val learnedVectors = new ContextEmbedder[String]
+              .setIterations(transformParameters(Iterations))
+              .setTargetCount(transformParameters(TargetCount))
+              .setVectorSize(transformParameters(VectorSize))
+              .setLearningRate(transformParameters(LearningRate))
+              .setSeed(transformParameters(Seed))
+              .optimize(skipGrams, instance.wordVectors)
 
-              learnedVectors
-                .flatMap(x => {
-                  x.leafMap.map(y => {
-                    val vectorSize = transformParameters(VectorSize)
-                    val index = (y._2.index * vectorSize).toInt
-                    y._1 -> x.leafVectors.slice(index, index + vectorSize)
-                  })
+            learnedVectors
+              .flatMap(x => {
+                x.leafMap.map(y => {
+                  val vectorSize = transformParameters(VectorSize)
+                  val index = (y._2.index * vectorSize).toInt
+                  y._1 -> x.leafVectors.slice(index, index + vectorSize).toVector
                 })
-            case None =>
-              throw new RuntimeException(
-                """
+              })
+          case None =>
+            throw new RuntimeException(
+              """
                    the Word2Vec has not been trained on any words!
                    you must fit the transformer to a corpus of text before
                    any context can be extracted!
                 """)
           }
       }
+    }
   }
-
 }
