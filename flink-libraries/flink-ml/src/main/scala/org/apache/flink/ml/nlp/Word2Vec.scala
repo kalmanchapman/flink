@@ -62,6 +62,11 @@ class Word2Vec extends Transformer[Word2Vec] {
     this
   }
 
+  def setSeed(seed: Long): this.type = {
+    parameters.add(Seed, seed)
+    this
+  }
+
 }
 
 object Word2Vec {
@@ -83,6 +88,10 @@ object Word2Vec {
 
   case object WindowSize extends Parameter[Int] {
     val defaultValue = Some(10)
+  }
+
+  case object Seed extends Parameter[Long] {
+    val defaultValue = None
   }
 
   def apply(): Word2Vec = {
@@ -110,6 +119,7 @@ object Word2Vec {
           .setTargetCount(fitParameters(TargetCount))
           .setVectorSize(fitParameters(VectorSize))
           .setLearningRate(fitParameters(LearningRate))
+          .setSeed(fitParameters(Seed))
           .createInitialWeightsDS(instance.wordVectors, skipGrams)
 
         instance.wordVectors = Some(weights)
@@ -118,11 +128,11 @@ object Word2Vec {
   }
 
   implicit def words2Vecs[T <: Iterable[String]] = {
-    new TransformDataSetOperation[Word2Vec, T, (String, DenseVector)] {
+    new TransformDataSetOperation[Word2Vec, T, (String, Array[Float])] {
       override def transformDataSet(
         instance: Word2Vec,
         transformParameters: ParameterMap,
-        input: DataSet[T]) : DataSet[(String, DenseVector)] = {
+        input: DataSet[T]) : DataSet[(String, Array[Float])] = {
           instance.wordVectors match {
             case Some(vectors) =>
               val skipGrams = input
@@ -139,15 +149,17 @@ object Word2Vec {
                 .setTargetCount(transformParameters(TargetCount))
                 .setVectorSize(transformParameters(VectorSize))
                 .setLearningRate(transformParameters(LearningRate))
+                .setSeed(transformParameters(Seed))
                 .optimize(skipGrams, instance.wordVectors)
 
-              input.flatMap(x => x).distinct()
-                .mapWithBcVariable(learnedVectors) {
-                (t, weights) => weights.leafVectors.get(t) match {
-                  case Some(value) => (t, value.vector)
-                  case None => (t, DenseVector())
-                }
-              }
+              learnedVectors
+                .flatMap(x => {
+                  x.leafMap.map(y => {
+                    val vectorSize = transformParameters(VectorSize)
+                    val index = (y._2.index * vectorSize).toInt
+                    y._1 -> x.leafVectors.slice(index, index + vectorSize)
+                  })
+                })
             case None =>
               throw new RuntimeException(
                 """
@@ -157,7 +169,6 @@ object Word2Vec {
                 """)
           }
       }
-    }
   }
 
 }
