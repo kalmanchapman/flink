@@ -351,7 +351,7 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
   private def aggregateWeights(weights: DataSet[(Int, Array[Double])], vocabSize: Int)
   : DataSet[Array[Double]] = weights
     .groupBy(0)
-    .reduceGroup(x => x.reduce(sumWeights(_,_)))
+    .reduce(sumWeights(_,_))
     .map(x => {
       val globalVector = new Array[Double](vocabSize * vectorSize)
       x._2.copyToArray(globalVector, x._1 * vectorSize)
