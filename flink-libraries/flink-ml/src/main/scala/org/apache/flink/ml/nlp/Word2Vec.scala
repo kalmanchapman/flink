@@ -62,6 +62,11 @@ class Word2Vec extends Transformer[Word2Vec] {
     this
   }
 
+  def setBatchSize(batchSize: Int): this.type = {
+    parameters.add(BatchSize, batchSize)
+    this
+  }
+
   def setSeed(seed: Long): this.type = {
     parameters.add(Seed, seed)
     this
@@ -88,6 +93,10 @@ object Word2Vec {
 
   case object WindowSize extends Parameter[Int] {
     val defaultValue = Some(10)
+  }
+
+  case object BatchSize extends Parameter[Int] {
+    val defaultValue = Some(1000)
   }
 
   case object Seed extends Parameter[Long] {
@@ -119,6 +128,7 @@ object Word2Vec {
           .setTargetCount(fitParameters(TargetCount))
           .setVectorSize(fitParameters(VectorSize))
           .setLearningRate(fitParameters(LearningRate))
+          .setBatchSize(fitParameters(BatchSize))
           .setSeed(fitParameters(Seed))
           .createInitialWeightsDS(instance.wordVectors, skipGrams)
 
@@ -149,6 +159,7 @@ object Word2Vec {
               .setTargetCount(transformParameters(TargetCount))
               .setVectorSize(transformParameters(VectorSize))
               .setLearningRate(transformParameters(LearningRate))
+              .setBatchSize(transformParameters(BatchSize))
               .setSeed(transformParameters(Seed))
               .optimize(skipGrams, instance.wordVectors)
 
