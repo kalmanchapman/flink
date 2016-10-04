@@ -164,13 +164,7 @@ object Word2Vec {
               .optimize(skipGrams, instance.wordVectors)
 
             learnedVectors
-              .flatMap(x => {
-                x.leafMap.map(y => {
-                  val vectorSize = transformParameters(VectorSize)
-                  val index = (y._2.index * vectorSize).toInt
-                  y._1 -> x.leafVectors.slice(index, index + vectorSize).toVector
-                })
-              })
+              .flatMap(_.fetchVectors)
           case None =>
             throw new RuntimeException(
               """

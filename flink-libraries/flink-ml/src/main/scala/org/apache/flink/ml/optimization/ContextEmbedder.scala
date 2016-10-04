@@ -19,14 +19,13 @@
 package org.apache.flink.ml.optimization
 
 import com.github.fommil.netlib.BLAS.{getInstance => blas}
-
-import breeze.{numerics => BreezeNumerics}
 import org.apache.flink.api.common._
 import org.apache.flink.api.scala._
 import org.apache.flink.api.scala.utils._
 import org.apache.flink.ml._
 import org.apache.flink.ml.common.Parameter
-//import org.apache.flink.ml.math.{BLAS, DenseVector}
+
+import scala.collection.immutable.{HashMap, LongMap}
 import org.apache.flink.ml.optimization.Embedder._
 import org.apache.flink.util.XORShiftRandom
 
@@ -125,17 +124,18 @@ case class HSMTrainingSet(leafSet: Vector[Long], innerSet: HSMStepValue) extends
 
 case class HSMWeightMatrix[T](leafMap: Map[T, HSMTargetValue],
                               innerMap: Map[String, Long],
-                              leafVectors: Array[Double],
-                              innerVectors: Array[Double]) extends WeightMatrix {
+                              leafVectors: LongMap[Array[Double]],
+                              innerVectors: LongMap[Array[Double]]) extends WeightMatrix {
   def ++ (that: HSMWeightMatrix[T]): HSMWeightMatrix[T] = {
-    HSMWeightMatrix(this.leafMap ++ that.leafMap,
+    HSMWeightMatrix(
+      this.leafMap ++ that.leafMap,
       this.innerMap ++ that.innerMap,
-      that.leafVectors,
-      that.innerVectors)
+      this.leafVectors ++ that.leafVectors,
+      this.innerVectors ++ that.innerVectors)
   }
 
-  def ++ (vectors: (Array[Double], Array[Double])): HSMWeightMatrix[T] = {
-    HSMWeightMatrix(this.leafMap, this.innerMap, vectors._1, vectors._2)
+  def fetchVectors: Map[T, Vector[Double]] = {
+    this.leafMap.map(x => x._1 -> this.leafVectors.getOrElse(x._2.index, Array.empty).toVector)
   }
 }
 
@@ -302,23 +302,18 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
       .flatMap(x => x._2._2._2)
       .distinct()
       .zipWithIndex
-      .map(x => Map(x._2 -> x._1))
-      .reduce(_ ++ _)
-      .map(m => HSMWeightMatrix(Map.empty[T, HSMTargetValue], m, Array.empty, Array.empty))
+      .map(x => Map(x._2 -> x._1) -> LongMap(x._1 -> new Array[Double](vectorSize)))
+      .reduce((a,b) => (a._1 ++ b._1) -> (a._2 ++ b._2))
+      .map(m => HSMWeightMatrix(Map.empty[T, HSMTargetValue], m._1, LongMap.empty, m._2))
 
     val leafMap = leafValues
-      .map(x => Map(x._2._1 -> HSMTargetValue(x._1, x._2._2._1, x._2._2._2)))
-      .reduce(_ ++ _)
-      .map(m => HSMWeightMatrix(m,Map.empty,Array.empty, Array.empty))
+      .map(x => Map(x._2._1 -> HSMTargetValue(x._1, x._2._2._1, x._2._2._2)) ->
+        LongMap(x._1 -> Array.fill[Double](leafCount.toInt * vectorSize)(
+        (initRandom.nextDouble() - 0.5f) / vectorSize)))
+      .reduce((a,b) => (a._1 ++ b._1) -> (a._2 ++ b._2))
+      .map(m => HSMWeightMatrix(m._1, Map.empty, m._2, LongMap.empty))
 
     innerMap.union(leafMap).reduce(_ ++ _)
-      .map(x => {
-        val lVectors =
-          Array.fill[Double](leafCount.toInt * vectorSize)(
-            (initRandom.nextDouble() - 0.5f) / vectorSize)
-        val iVectors = new Array[Double](leafCount.toInt * vectorSize)
-        x.copy(leafVectors = lVectors, innerVectors = iVectors)
-      })
   }
 
   private def trainIteration(data: DataSet[HSMTrainingSet],
@@ -344,36 +339,23 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
 
     learnedLeafWeights
       .crossWithTiny(learnedInnerWeights)
+      .map(x => HSMWeightMatrix(Map.empty[T, HSMTargetValue], Map.empty, x._1, x._2))
       .crossWithTiny(weights)
       .map(x => x._2 ++ x._1)
   }
 
   private def aggregateWeights(weights: DataSet[(Int, Array[Double])], vocabSize: Int)
-  : DataSet[Array[Double]] = weights
+  : DataSet[LongMap[Array[Double]]] = weights
     .groupBy(0)
     .reduce(sumWeights(_,_))
-    .map(x => {
-      val globalVector = new Array[Double](vocabSize * vectorSize)
-      x._2.copyToArray(globalVector, x._1 * vectorSize)
-      Seq(x._1) -> globalVector
-    })
-    .reduce(mergeWeights(_,_))
-    .map(_._2)
+    .map(x => LongMap.singleton(x._1, x._2))
+    .reduce(_ ++ _)
+
 
   private def sumWeights[V <: (Int, Array[Double])](vecA: V, vecB: V)  = {
     val targetVector = vecB._2
     blas.daxpy(vectorSize, 1.0d, vecA._2, 1, targetVector, 1)
     (vecB._1, targetVector)
-  }
-
-  def mergeWeights[V <: (Seq[Int], Array[Double])](vecA: V, vecB: V) = {
-    val sinkVector = vecA._2.clone()
-    vecB._1.foreach(
-      index => {
-        val vecInd = index * vectorSize
-        Array.copy(vecB._2, vecInd, sinkVector, vecInd, vectorSize)
-    })
-    vecA._1 ++ vecB._1 -> sinkVector
   }
 
   private def train(
@@ -448,7 +430,9 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
   context: Seq[HSMTrainingSet],
   weights: HSMWeightMatrix[T])
   : (Seq[(Int, Array[Double])], Seq[(Int, Array[Double])]) =
-    train(context, weights.leafVectors -> weights.innerVectors, None)
+    train(context,
+      weights.leafVectors.values.reduce(_ ++ _) ->
+        weights.innerVectors.values.reduce(_ ++ _), None)
 
   private def createExpTable(): Array[Double] = {
     val expTable = new Array[Double](EXP_TABLE_SIZE)
