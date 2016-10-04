@@ -308,7 +308,7 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
 
     val leafMap = leafValues
       .map(x => Map(x._2._1 -> HSMTargetValue(x._1, x._2._2._1, x._2._2._2)) ->
-        LongMap(x._1 -> Array.fill[Double](leafCount.toInt * vectorSize)(
+        LongMap(x._1 -> Array.fill[Double](vectorSize)(
         (initRandom.nextDouble() - 0.5f) / vectorSize)))
       .reduce((a,b) => (a._1 ++ b._1) -> (a._2 ++ b._2))
       .map(m => HSMWeightMatrix(m._1, Map.empty, m._2, LongMap.empty))
