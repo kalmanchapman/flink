@@ -334,11 +334,11 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
       .mapWithBcVariable(weights)(train)
 
     val learnedLeafWeights = aggregateWeights(
-      learnedWeights.map(_._1).flatMap(x => x).map(x => (x._1.toLong, x._2)),
+      learnedWeights.map(_._1).flatMap(x => x),
       vocabSize)
 
     val learnedInnerWeights = aggregateWeights(
-      learnedWeights.map(_._2).flatMap(x => x).map(x => (x._1.toLong, x._2)),
+      learnedWeights.map(_._2).flatMap(x => x),
       vocabSize)
 
     learnedLeafWeights
@@ -365,7 +365,7 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
     context: Seq[HSMTrainingSet],
     weights: (LongMap[Array[Double]], LongMap[Array[Double]]),
     alpha: Option[Double])
-  : (LongMap[Array[Double]], LongMap[Array[Double]]) = {
+  : (Seq[(Long, Array[Double])], Seq[(Long, Array[Double])]) = {
     val expTable = createExpTable()
     val vocabSize = weights._1.size
     val leafModify = new Array[Int](vocabSize)
@@ -408,13 +408,15 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
         }
         (leafWeights, innerWeights, decayedAlpha, trainSetPos + 1, trainSetSize)
     }
-    model._1 -> model._2
+    val sparseLeaf = model._1.filterKeys(x => leafModify(x.toInt) > 0).toSeq
+    val sparseInner = model._2.filterKeys(x => leafModify(x.toInt) > 0).toSeq
+    sparseLeaf -> sparseInner
   }
 
   private def train(
   context: Seq[HSMTrainingSet],
   weights: HSMWeightMatrix[T])
-  : (LongMap[Array[Double]], LongMap[Array[Double]]) =
+  : (Seq[(Long, Array[Double])], Seq[(Long, Array[Double])]) =
     train(context, weights.leafVectors -> weights.innerVectors, None)
 
   private def createExpTable(): Array[Double] = {
