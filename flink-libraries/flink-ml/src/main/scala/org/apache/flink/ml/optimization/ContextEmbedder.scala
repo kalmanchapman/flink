@@ -281,27 +281,21 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
 
   private def formHSMWeightMatrix(data: DataSet[Context[T]])
   : DataSet[HSMWeightMatrix[T]] = {
-    val env = data.getExecutionEnvironment
-
     val targets = data
       .map(x => (x.target, 1))
       .groupBy(0).sum(1)
       .filter(_._2 >= minTargetCount)
 
-    val softMaxTree = env.fromElements(HuffmanBinaryTree.tree(targets.collect()))
+    val softMaxTree = HuffmanBinaryTree.tree(targets.collect())
 
     val leafValues = targets
-      .mapWithBcVariable(softMaxTree) {
-        (target, softMaxTree) => {
+      .map {
+        target => {
           val code = HuffmanBinaryTree.encode(softMaxTree, target._1)
           val path = HuffmanBinaryTree.path(code)
           target._1 -> (code, path)
         }
       }.zipWithIndex
-
-    val leafCount = leafValues.count()
-
-    val initRandom = new XORShiftRandom(seed)
 
     val innerMap = leafValues
       .flatMap(x => x._2._2._2)
@@ -310,6 +304,8 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
       .map(x => Map(x._2 -> x._1) -> LongMap(x._1 -> new Array[Double](vectorSize)))
       .reduce((a,b) => (a._1 ++ b._1) -> (a._2 ++ b._2))
       .map(m => HSMWeightMatrix(Map.empty[T, HSMTargetValue], m._1, LongMap.empty, m._2))
+
+    val initRandom = new XORShiftRandom(seed)
 
     val leafMap = leafValues
       .map(x => Map(x._2._1 -> HSMTargetValue(x._1, x._2._2._1, x._2._2._2)) ->
@@ -327,11 +323,7 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
                        learningRate: Double)
   : DataSet[HSMWeightMatrix[T]] = {
     val learnedWeights = data
-      .zipWithIndex
-      .map(x => x._1 % batchSize -> Seq(x._2))
-      .groupBy(0)
-      .reduce((a,b) => (a._1, a._2 ++ b._2))
-      .map(_._2)
+      .mapPartition(_.grouped(batchSize))
       .mapWithBcVariable(weights)(train)
 
     val learnedLeafWeights = aggregateWeights(
@@ -354,7 +346,6 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
     .reduce(sumWeights(_,_))
     .map(x => LongMap.singleton(x._1, x._2))
     .reduce(_ ++ _)
-
 
   private def sumWeights[V <: (Long, Array[Double])](vecA: V, vecB: V)  = {
     val targetVector = vecB._2
