@@ -140,10 +140,10 @@ object Word2Vec {
   }
 
   implicit def words2Vecs[T <: Iterable[String]] = {
-    new TransformDataSetOperation[Word2Vec, T, (String, Vector[Double])] {
+    new TransformDataSetOperation[Word2Vec, T, (String, Vector[Float])] {
       override def transformDataSet(instance: Word2Vec,
                                     transformParameters: ParameterMap,
-                                    input: DataSet[T]): DataSet[(String, Vector[Double])] = {
+                                    input: DataSet[T]): DataSet[(String, Vector[Float])] = {
         val resultingParameters = instance.parameters ++ transformParameters
         
         instance.wordVectors match {
