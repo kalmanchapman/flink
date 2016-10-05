@@ -226,15 +226,16 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
   private val EXP_TABLE_SIZE = 1000
   private val MAX_EXP = 6
 
-  val numberOfIterations: Int = parameters(Iterations)
-  val minTargetCount: Int = parameters(TargetCount)
-  val vectorSize: Int = parameters(VectorSize)
-  val learningRate: Double = parameters(LearningRate)
-  val batchSize: Int = parameters(BatchSize)
-  val seed: Long = parameters(Seed)
+  def numberOfIterations: Int = parameters(Iterations)
+  def minTargetCount: Int = parameters(TargetCount)
+  def vectorSize: Int = parameters(VectorSize)
+  def learningRate: Double = parameters(LearningRate)
+  def batchSize: Int = parameters(BatchSize)
+  def seed: Long = parameters(Seed)
 
   def optimize(data: DataSet[Context[T]],
                initialWeights: Option[DataSet[HSMWeightMatrix[T]]]): DataSet[HSMWeightMatrix[T]] = {
+    val numberOfIterations: Int = parameters(Iterations)
 
     val weights: DataSet[HSMWeightMatrix[T]] = createInitialWeightsDS(initialWeights, data)
 

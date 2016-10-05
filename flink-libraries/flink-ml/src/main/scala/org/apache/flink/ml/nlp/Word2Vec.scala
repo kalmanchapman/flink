@@ -114,22 +114,24 @@ object Word2Vec {
         fitParameters: ParameterMap,
         input: DataSet[T])
       : Unit = {
+        val resultingParameters = instance.parameters ++ fitParameters
+        
         val skipGrams = input
           .flatMap(x =>
             x.zipWithIndex
               .map(z => {
-                val window = (scala.math.random * 100 % fitParameters(WindowSize)).toInt
+                val window = (scala.math.random * 100 % resultingParameters(WindowSize)).toInt
                 Context[String](
                   z._1, x.slice(z._2 - window, z._2) ++ x.slice(z._2 +1, z._2 + window))
               }))
 
         val weights = new ContextEmbedder[String]
-          .setIterations(fitParameters(Iterations))
-          .setTargetCount(fitParameters(TargetCount))
-          .setVectorSize(fitParameters(VectorSize))
-          .setLearningRate(fitParameters(LearningRate))
-          .setBatchSize(fitParameters(BatchSize))
-          .setSeed(fitParameters(Seed))
+          .setIterations(resultingParameters(Iterations))
+          .setTargetCount(resultingParameters(TargetCount))
+          .setVectorSize(resultingParameters(VectorSize))
+          .setLearningRate(resultingParameters(LearningRate))
+          .setBatchSize(resultingParameters(BatchSize))
+          .setSeed(resultingParameters(Seed))
           .createInitialWeightsDS(instance.wordVectors, skipGrams)
 
         instance.wordVectors = Some(weights)
@@ -139,28 +141,29 @@ object Word2Vec {
 
   implicit def words2Vecs[T <: Iterable[String]] = {
     new TransformDataSetOperation[Word2Vec, T, (String, Vector[Double])] {
-      override def transformDataSet(
-                                     instance: Word2Vec,
-                                     transformParameters: ParameterMap,
-                                     input: DataSet[T]): DataSet[(String, Vector[Double])] = {
+      override def transformDataSet(instance: Word2Vec,
+                                    transformParameters: ParameterMap,
+                                    input: DataSet[T]): DataSet[(String, Vector[Double])] = {
+        val resultingParameters = instance.parameters ++ transformParameters
+        
         instance.wordVectors match {
           case Some(vectors) =>
             val skipGrams = input
               .flatMap(x =>
                 x.zipWithIndex
                   .map(z => {
-                    val window = (scala.math.random * 100 % transformParameters(WindowSize)).toInt
+                    val window = (scala.math.random * 100 % resultingParameters(WindowSize)).toInt
                     Context[String](
                       z._1, x.slice(z._2 - window, z._2) ++ x.slice(z._2 + 1, z._2 + window))
                   }))
 
             val learnedVectors = new ContextEmbedder[String]
-              .setIterations(transformParameters(Iterations))
-              .setTargetCount(transformParameters(TargetCount))
-              .setVectorSize(transformParameters(VectorSize))
-              .setLearningRate(transformParameters(LearningRate))
-              .setBatchSize(transformParameters(BatchSize))
-              .setSeed(transformParameters(Seed))
+              .setIterations(resultingParameters(Iterations))
+              .setTargetCount(resultingParameters(TargetCount))
+              .setVectorSize(resultingParameters(VectorSize))
+              .setLearningRate(resultingParameters(LearningRate))
+              .setBatchSize(resultingParameters(BatchSize))
+              .setSeed(resultingParameters(Seed))
               .optimize(skipGrams, instance.wordVectors)
 
             learnedVectors
