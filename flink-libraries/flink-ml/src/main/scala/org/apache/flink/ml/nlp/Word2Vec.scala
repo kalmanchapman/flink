@@ -18,18 +18,65 @@
 
 package org.apache.flink.ml.nlp
 
-import org.apache.flink.api.common.typeinfo.TypeInformation
 import org.apache.flink.api.scala._
-import org.apache.flink.ml._
 import org.apache.flink.ml.common.{Parameter, ParameterMap}
-import org.apache.flink.ml.math.DenseVector
 import org.apache.flink.ml.optimization.{Context, ContextEmbedder, HSMWeightMatrix}
 import org.apache.flink.ml.pipeline.{FitOperation, TransformDataSetOperation, Transformer}
 
-import scala.reflect.ClassTag
-
 /**
-  * Created by kal on 9/22/16.
+  * Implements Word2Vec as a transformer on a DataSet[Iterable[String]]
+  *
+  * Calculates valuable vectorizations of individual words given
+  * the context in which they appear
+  *
+  * @example
+  * {{{
+  *   //constructed of 'sentences' - where each string in the iterable is a word
+  *   val stringsDS = DataSet[Iterable[String]] = ...
+  *   val stringsDS2 = DataSet[Iterable[String]] = ...
+  *
+  *   val w2V = Word2Vec()
+  *     .setIterations(5)
+  *     .setTargetCount(10)
+  *     .setSeed(500)
+  *
+  *   //internalizes an initial weightSet
+  *   w2V.fit(stringsDS)
+  *
+  *   //note that the same DS can be used to fit and optimize
+  *   //the number of learned vectors is limted to the vocab built in fit
+  *   val wordVectors : DataSet[(String, Vector[Double])] = w2V.optimize(stringsDS2)
+  * }}}
+  *
+  * =Parameters=
+  *
+  * - [[org.apache.flink.ml.nlp.Word2Vec.WindowSize]]
+  * sets the size of window for skipGram formation: how far on either side of
+  * a given word will we sample the context? (Default value: '''10''')
+  *
+  * - [[org.apache.flink.ml.nlp.Word2Vec.Iterations]]
+  * sets the number of global iterations the training set is passed through - essentially looping on
+  * whole set, leveraging flink's iteration operator (Default value: '''10''')
+  *
+  * - [[org.apache.flink.ml.nlp.Word2Vec.TargetCount]]
+  * sets the minimum number of occurences of a given target value before that value is excluded from vocabulary
+  * (e.g. if this parameter is set to '5', and a target appears in the training set less than 5 times, it is not
+  * included in vocabulary) (Default value: '''5''')
+  *
+  * - [[org.apache.flink.ml.nlp.Word2Vec.VectorSize]]
+  * sets the length of each learned vector (Default value: '''100''')
+  *
+  * - [[org.apache.flink.ml.nlp.Word2Vec.LearningRate]]
+  * sets the rate of descent during backpropagation - this value decays linearly with
+  * individual training sets, determined by BatchSize (Default value: '''0.015''')
+  *
+  * - [[org.apache.flink.ml.nlp.Word2Vec.BatchSize]]
+  * sets the batch size of training sets - the input DataSet will be batched into
+  * groups of this size for learning (Default value: '''1000''')
+  *
+  * - [[org.apache.flink.ml.nlp.Word2Vec.Seed]]
+  * sets the seed for generating random vectors at initial weighting DataSet creation
+  * (Default value: '''Some(scala.util.Random.nextLong)''')
   */
 class Word2Vec extends Transformer[Word2Vec] {
   import Word2Vec._
@@ -107,6 +154,11 @@ object Word2Vec {
     new Word2Vec()
   }
 
+  /** [[FitOperation]] which builds initial vocabulary for Word2Vec context embedding
+    *
+    * @tparam T Subtype of Iterable[String]
+    * @return
+    */
   implicit def learnWordVectors[T <: Iterable[String]] = {
     new FitOperation[Word2Vec, T] {
       override def fit(
@@ -139,6 +191,14 @@ object Word2Vec {
     }
   }
 
+  /** [[TransformDataSetOperation]] for words to vectors
+    * form skipgrams from the input dataset and learn vectors against
+    * the vocabulary constructed during the fit operation
+    * returns a dataset of distinct words and their learned representations
+    *
+    * @tparam T subtype of Iterable[String]
+    * @return
+    */
   implicit def words2Vecs[T <: Iterable[String]] = {
     new TransformDataSetOperation[Word2Vec, T, (String, Vector[Double])] {
       override def transformDataSet(instance: Word2Vec,
