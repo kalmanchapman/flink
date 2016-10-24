@@ -18,32 +18,28 @@
 
 package org.apache.flink.ml.optimization
 
-import org.apache.flink.api.scala._
 import org.apache.flink.ml.util.FlinkTestBase
 import org.scalatest.{FlatSpec, Matchers}
 
 class HuffmanBinaryTreeITSuite extends FlatSpec with Matchers with FlinkTestBase {
-  behavior of "ContextEmbedder for generic context learning implementation"
+  behavior of "HuffmanBinaryTree for use in HSM"
 
-  it should "form an initial vector set given a training corpus" in {
-    val context =
-      Seq(Context(0, Seq(0,0,0,0)),
-        Context(1, Seq(0,0,0,0)),
-        Context(2, Seq(0,0,0,0)))
+  it should "correctly encode a huffman binary tree given a set of weighted values" in {
+    val weightedValues = Range(0, 1000).zip(Range(0, 1000))
 
-    val env = ExecutionEnvironment.getExecutionEnvironment
+    val tree = HuffmanBinaryTree.tree(weightedValues)
 
-    env.setParallelism(2)
+    //the most heavily weighted value should have a code that is much shorter than the lightest
+    HuffmanBinaryTree.encode(tree, 1000).size should be < HuffmanBinaryTree.encode(tree, 0).size
+    //the two lightest values should be sitting on opposite branches of the bottommost node with children
+    HuffmanBinaryTree.encode(tree, 0).size should be (HuffmanBinaryTree.encode(tree, 1).size)
 
-    val dataSet = env.fromCollection(context)
+    //after encoding all values
+    val encodings = weightedValues.map(x => x._1  -> HuffmanBinaryTree.encode(tree, x._1))
+    //distinct on paths will result in identities of every inner node
+    val paths = encodings.flatMap(x => HuffmanBinaryTree.path(x._2)).distinct
 
-    val initializedWeights = new ContextEmbedder[Int]
-      .setBatchSize(context.size)
-      .setIterations(100)
-      .createInitialWeightsDS(None, dataSet).collect().head
-
-    println("here")
-
-    initializedWeights.leafMap.size should be (3)
+    //there should be one fewer inner nodes than there are values
+    paths.size should be (weightedValues.size - 1)
   }
 }
