@@ -31,7 +31,8 @@ class HuffmanBinaryTreeITSuite extends FlatSpec with Matchers with FlinkTestBase
 
     //the most heavily weighted value should have a code that is much shorter than the lightest
     HuffmanBinaryTree.encode(tree, 1000).size should be < HuffmanBinaryTree.encode(tree, 0).size
-    //the two lightest values should be sitting on opposite branches of the bottommost node with children
+    //the two lightest values should be sitting on opposite branches of
+    // the bottommost node with children
     HuffmanBinaryTree.encode(tree, 0).size should be (HuffmanBinaryTree.encode(tree, 1).size)
 
     //after encoding all values

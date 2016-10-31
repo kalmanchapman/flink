@@ -37,8 +37,8 @@ import scala.reflect.ClassTag
   * used by the ContextEmbedder to encode unique elements and construct a
   * weight set corresponding to huffman tree traversal from root to a given element
   * this is used during training to reduce network passes:
-  *   - naive is O(N&#94;2): needing to compute the likelihood of output probabilities for every vocabulary element
-  *     given every other vocabulary element
+  *   - naive is O(N&#94;2): needing to compute the likelihood of output probabilities
+  *     for every vocabulary element given every other vocabulary element
   *   - using tree traversal is O(logN): only need to compute probabilities of descent from root
   *     to expected leaf of tree
   *
@@ -162,7 +162,8 @@ trait TrainingSet
   * is to say: given a target value, these values are expected to appear as context.
   * this gives the 'ground' we train against, as the network guesses context for targets
   *
-  * @param target the target value - this will be decomposed into a huffman tree path later in training
+  * @param target the target value - this will be decomposed into a
+  *               huffman tree path later in training
   * @param context the set of context values - these will be mapped directly to numeric vectors
   * @tparam T the type of values being embedded - i.e. String for Word2Vec
   */
@@ -175,7 +176,8 @@ case class HSMStepValue(innerIndex: Vector[Long], code: Vector[Int], codeDepth: 
 case class HSMTrainingSet(leafSet: Vector[Long], innerSet: HSMStepValue) extends TrainingSet
 
 /** the return type for ContextEmbedder optimizations - gives mapping of target values to
-  * huffman encodings, paths and vector indices, mappings of huffman node identities to vector indices,
+  * huffman encodings, paths and vector indices,
+  * mappings of huffman node identities to vector indices,
   * target value index to vector and huffman value index to vector
   *
   * @param leafMap [[scala.collection.immutable.Map[T, HSMTargetValue]]]
@@ -194,7 +196,8 @@ case class HSMWeightMatrix[T](leafMap: Map[T, HSMTargetValue],
     * @param that [[org.apache.flink.ml.optimization.HSMWeightMatrix]]
     * @return [[org.apache.flink.ml.optimization.HSMWeightMatrix]]
     */
-  def ++ (that: HSMWeightMatrix[T]): HSMWeightMatrix[T] = {
+  def ++ (that: HSMWeightMatrix[T])
+  : HSMWeightMatrix[T] = {
     HSMWeightMatrix(
       this.leafMap ++ that.leafMap,
       this.innerMap ++ that.innerMap,
@@ -208,8 +211,10 @@ case class HSMWeightMatrix[T](leafMap: Map[T, HSMTargetValue],
     * @param weights
     * @return [[org.apache.flink.ml.optimization.HSMWeightMatrix]]
     */
-  def updateVectors(weights: (LongMap[Array[Double]], LongMap[Array[Double]])) : HSMWeightMatrix[T] = {
-    this.copy(leafVectors = this.leafVectors ++ weights._1, innerVectors = this.innerVectors ++ weights._2)
+  def updateVectors(weights: (LongMap[Array[Double]], LongMap[Array[Double]]))
+  : HSMWeightMatrix[T] = {
+    this.copy(leafVectors =
+      this.leafVectors ++ weights._1, innerVectors = this.innerVectors ++ weights._2)
   }
 
   /** zips the target values to corresponding vectors
@@ -327,13 +332,15 @@ abstract class Embedder[A, B] extends Solver[A, B] {
   * =Parameters=
   *
   * - [[org.apache.flink.ml.optimization.Embedder.Iterations]]
-  * sets the number of global iterations the training set is passed through - essentially looping on
-  * whole set, leveraging flink's iteration operator (Default value: '''10''')
+  * sets the number of global iterations the training set is passed through -
+  * essentially looping on whole set, leveraging flink's iteration operator
+  * (Default value: '''10''')
   *
   * - [[org.apache.flink.ml.optimization.Embedder.TargetCount]]
-  * sets the minimum number of occurences of a given target value before that value is excluded from vocabulary
-  * (e.g. if this parameter is set to '5', and a target appears in the training set less than 5 times, it is not
-  * included in vocabulary) (Default value: '''5''')
+  * sets the minimum number of occurences of a given target value before that value
+  * is excluded from vocabulary
+  * (e.g. if this parameter is set to '5', and a target appears in the training set
+  * fewer than 5 times, it is not included in vocabulary) (Default value: '''5''')
   *
   * - [[org.apache.flink.ml.optimization.Embedder.VectorSize]]
   * sets the length of each learned vector (Default value: '''100''')
@@ -585,7 +592,8 @@ class ContextEmbedder[T: ClassTag: typeinfo.TypeInformation]
               //reassign forwardPass to sigmoidal output of result
               forwardPass = expTable(expIndex)
 
-              //error function between expected tree traversal - 1 or 0 - and output probability of same
+              //error function between expected tree traversal - 1 or 0 -
+              // and output probability of same
               val gradient =
                 (1 - trainingSet.innerSet.code(codePos) - forwardPass) * decayedAlpha
 

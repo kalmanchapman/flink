@@ -26,7 +26,7 @@ import org.scalatest.{FlatSpec, Matchers}
 class ContextEmbedderITSuite extends FlatSpec with Matchers with FlinkTestBase {
   behavior of "ContextEmbedder for generic context learning implementation"
 
-  it should "form an initial vector set given a training corpus" in {
+  it should "form an initial vector set given a training corpus and modify" in {
     val context =
       Seq(Context(0, Seq(0,0,0,0)),
         Context(1, Seq(0,0,0,0)),
@@ -59,6 +59,7 @@ class ContextEmbedderITSuite extends FlatSpec with Matchers with FlinkTestBase {
       .setIterations(100)
       .optimize(dataSet, Option(initializedWeights)).collect().head
 
-    learnedWeights.leafVectors.get(0).get should not be initializedWeightsLocal.leafVectors.get(0).get
+    learnedWeights.leafVectors.get(0).get should not be
+      initializedWeightsLocal.leafVectors.get(0).get
   }
 }

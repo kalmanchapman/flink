@@ -59,9 +59,10 @@ import org.apache.flink.ml.pipeline.{FitOperation, TransformDataSetOperation, Tr
   * whole set, leveraging flink's iteration operator (Default value: '''10''')
   *
   * - [[org.apache.flink.ml.nlp.Word2Vec.TargetCount]]
-  * sets the minimum number of occurences of a given target value before that value is excluded from vocabulary
-  * (e.g. if this parameter is set to '5', and a target appears in the training set less than 5 times, it is not
-  * included in vocabulary) (Default value: '''5''')
+  * sets the minimum number of occurences of a given target value before that value is
+  * excluded from vocabulary (e.g. if this parameter is set to '5', and a target
+  * appears in the training set less than 5 times, it is not included in vocabulary)
+  * (Default value: '''5''')
   *
   * - [[org.apache.flink.ml.nlp.Word2Vec.VectorSize]]
   * sets the length of each learned vector (Default value: '''100''')
